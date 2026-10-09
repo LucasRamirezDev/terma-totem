@@ -2,10 +2,11 @@
  * TERMA - Cliente de comunicación WebSocket con ESP32-S3
  * 
  * Gestiona el ciclo de vida del enlace WebSocket, reconexiones controladas,
- * envío de comandos etiquetados y sincronización de estado.
+ * aislamiento de sockets obsoletos, tabla de comandos en tránsito con timeouts,
+ * correlación de solicitudes/respuestas y validación estricta de telemetría.
  */
 
-import { DEFAULT_ESP32_IP, DEFAULT_WS_PATH } from '../constants/climate';
+import { DEFAULT_ESP32_IP, DEFAULT_WS_PATH, validateEsp32Telemetry } from '../constants/climate.js';
 
 class ESP32Client {
   constructor() {
@@ -16,6 +17,9 @@ class ESP32Client {
     this.statusListeners = new Set();
     this.isManualDisconnect = false;
     this.cmdCounter = 0;
+
+    // Tabla de comandos pendientes: Map<string, { id, action, payload, timeoutTimer, resolve, reject, timestamp }>
+    this.pendingCommands = new Map();
 
     // Dirección IP / Host predeterminada: 192.168.4.1 (Access Point estándar de ESP32)
     this.targetIp = this.getStoredIp() || DEFAULT_ESP32_IP;
@@ -48,29 +52,30 @@ class ESP32Client {
       // Ignorar errores de almacenamiento
     }
 
-    // Si estaba conectado o intentando conectar, reiniciar el enlace hacia la nueva IP
+    // Reiniciar enlace hacia la nueva IP
     this.isManualDisconnect = false;
     this.reconnect();
   }
 
-  /**
-   * Construye la URL WebSocket absoluta a partir de la IP/Host configurada.
-   */
   getWebSocketUrl() {
     let host = this.targetIp || DEFAULT_ESP32_IP;
     if (host.startsWith('ws://') || host.startsWith('wss://')) {
       return host;
     }
-    // Si incluye una ruta completa (ej. 192.168.4.1/ws)
     if (host.includes('/')) {
       return `ws://${host}`;
     }
     return `ws://${host}${DEFAULT_WS_PATH}`;
   }
 
-  /**
-   * Inicia la conexión WebSocket hacia el ESP32.
-   */
+  isConnected() {
+    return Boolean(this.ws && this.ws.readyState === WebSocket.OPEN);
+  }
+
+  getPendingCount() {
+    return this.pendingCommands.size;
+  }
+
   connect() {
     this.isManualDisconnect = false;
 
@@ -79,56 +84,64 @@ class ESP32Client {
       return;
     }
 
+    this.clearTimers();
     this.cleanupSocket();
 
     const wsUrl = this.getWebSocketUrl();
     this.updateStatus('connecting', `Conectando a ${this.targetIp}...`);
 
     try {
-      this.ws = new WebSocket(wsUrl);
+      const currentWs = new WebSocket(wsUrl);
+      this.ws = currentWs;
 
-      // Timeout de enlace (cancela si no responde en 6 segundos)
-      clearTimeout(this.connectionTimeoutTimer);
+      // Timeout de enlace (cancela si no responde en 5 segundos)
       this.connectionTimeoutTimer = setTimeout(() => {
-        if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+        if (this.ws === currentWs && currentWs.readyState === WebSocket.CONNECTING) {
           console.warn('[ESP32] Timeout de conexión superado');
           this.cleanupSocket();
           this.updateStatus('disconnected', 'Tiempo de conexión agotado');
           this.scheduleReconnect();
         }
-      }, 6000);
+      }, 5000);
 
-      this.ws.onopen = () => {
+      currentWs.onopen = () => {
+        if (this.ws !== currentWs) return;
         clearTimeout(this.connectionTimeoutTimer);
+        this.connectionTimeoutTimer = null;
         this.updateStatus('connected', 'Conectado');
         // Solicitar sincronización inicial del estado completo del ESP32
-        this.sendGetState();
+        this.sendGetState().catch(err => {
+          console.warn('[ESP32] Error en getState inicial:', err.message);
+        });
       };
 
-      this.ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          this.handleIncomingMessage(data);
-        } catch (e) {
-          console.warn('[ESP32] Error parseando JSON entrante:', e);
-        }
+      currentWs.onmessage = (event) => {
+        if (this.ws !== currentWs) return;
+        this.handleIncomingMessage(event.data);
       };
 
-      this.ws.onclose = (event) => {
+      currentWs.onerror = () => {
+        if (this.ws !== currentWs) return;
         clearTimeout(this.connectionTimeoutTimer);
+        this.connectionTimeoutTimer = null;
+        this.cleanupPendingCommands('Error en conexión WebSocket');
+        this.updateStatus('disconnected', 'Error de enlace');
+      };
+
+      currentWs.onclose = (event) => {
+        if (this.ws !== currentWs) return;
+        clearTimeout(this.connectionTimeoutTimer);
+        this.connectionTimeoutTimer = null;
+        this.cleanupPendingCommands('Conexión cerrada');
         const reason = event.wasClean ? 'Conexión cerrada' : 'Enlace perdido';
         this.updateStatus('disconnected', reason);
         if (!this.isManualDisconnect) {
           this.scheduleReconnect();
         }
       };
-
-      this.ws.onerror = () => {
-        clearTimeout(this.connectionTimeoutTimer);
-        this.updateStatus('disconnected', 'Error de enlace');
-      };
     } catch (err) {
-      clearTimeout(this.connectionTimeoutTimer);
+      this.clearTimers();
+      this.cleanupPendingCommands('Fallo al inicializar WebSocket');
       this.updateStatus('disconnected', 'Fallo al inicializar WebSocket');
       if (!this.isManualDisconnect) {
         this.scheduleReconnect();
@@ -136,57 +149,75 @@ class ESP32Client {
     }
   }
 
-  /**
-   * Cierra de forma explícita la conexión sin programar reconexión automática.
-   */
   disconnect() {
     this.isManualDisconnect = true;
-    clearTimeout(this.reconnectTimer);
-    clearTimeout(this.connectionTimeoutTimer);
+    this.clearTimers();
+    this.cleanupPendingCommands('Desconectado manualmente');
     this.cleanupSocket();
     this.updateStatus('disconnected', 'Desconectado manualmente');
   }
 
-  /**
-   * Reintenta la conexión limpiando temporizadores activos.
-   */
   reconnect() {
     this.isManualDisconnect = false;
-    clearTimeout(this.reconnectTimer);
-    clearTimeout(this.connectionTimeoutTimer);
+    this.clearTimers();
+    this.cleanupPendingCommands('Reiniciando conexión');
     this.cleanupSocket();
     this.connect();
   }
 
-  /**
-   * Limpia el socket actual y remueve sus listeners para evitar memory leaks o callbacks huérfanos.
-   */
+  clearTimers() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.connectionTimeoutTimer) {
+      clearTimeout(this.connectionTimeoutTimer);
+      this.connectionTimeoutTimer = null;
+    }
+  }
+
   cleanupSocket() {
     if (this.ws) {
+      const socket = this.ws;
+      this.ws = null;
       try {
-        this.ws.onopen = null;
-        this.ws.onmessage = null;
-        this.ws.onerror = null;
-        this.ws.onclose = null;
-        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-          this.ws.close();
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
         }
       } catch {
         // Ignorar excepciones al cerrar
       }
-      this.ws = null;
     }
+  }
+
+  cleanupPendingCommands(reason = 'Operación cancelada') {
+    for (const [, pending] of this.pendingCommands.entries()) {
+      clearTimeout(pending.timeoutTimer);
+      try {
+        pending.reject(new Error(reason));
+      } catch {
+        // Ignorar errores de rechazo
+      }
+    }
+    this.pendingCommands.clear();
   }
 
   scheduleReconnect() {
     if (this.isManualDisconnect) return;
 
-    clearTimeout(this.reconnectTimer);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       if (!this.isManualDisconnect) {
         this.connect();
       }
-    }, 4000);
+    }, 3500);
   }
 
   updateStatus(state, message) {
@@ -201,21 +232,18 @@ class ESP32Client {
           ip: this.targetIp,
         });
       } catch (e) {
-        console.error(e);
+        console.error('[ESP32] Error en statusListener:', e);
       }
     });
   }
 
-  /**
-   * Envía un mensaje JSON al ESP32 si el canal está abierto.
-   */
   send(payload) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(JSON.stringify(payload));
         return true;
       } catch (err) {
-        console.error('[ESP32] Error al enviar comando:', err);
+        console.error('[ESP32] Error al enviar mensaje:', err);
         return false;
       }
     }
@@ -227,40 +255,126 @@ class ESP32Client {
     return `cmd_${Date.now()}_${this.cmdCounter}`;
   }
 
-  // Comandos estándar del protocolo TERMA hacia el ESP32
+  sendCommand(action, payload = {}) {
+    const id = this.createCommandId();
+    const message = { action, ...payload, id };
+
+    if (!this.isConnected()) {
+      const err = new Error(`WebSocket no está conectado para enviar ${action}`);
+      const rejectedPromise = Promise.reject(err);
+      rejectedPromise.commandId = id;
+      rejectedPromise.id = id;
+      rejectedPromise.sent = false;
+      return rejectedPromise;
+    }
+
+    let resolvePromise;
+    let rejectPromise;
+
+    const promise = new Promise((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+
+    promise.commandId = id;
+    promise.id = id;
+
+    const timeoutTimer = setTimeout(() => {
+      if (this.pendingCommands.has(id)) {
+        this.pendingCommands.delete(id);
+        rejectPromise(new Error(`Timeout de 3s esperando confirmación de ${action} (id: ${id})`));
+      }
+    }, 3000);
+
+    this.pendingCommands.set(id, {
+      id,
+      action,
+      payload,
+      timestamp: Date.now(),
+      timeoutTimer,
+      resolve: resolvePromise,
+      reject: rejectPromise,
+    });
+
+    const sent = this.send(message);
+    promise.sent = sent;
+
+    if (!sent) {
+      clearTimeout(timeoutTimer);
+      this.pendingCommands.delete(id);
+      rejectPromise(new Error(`Fallo de socket al transmitir ${action}`));
+    }
+
+    return promise;
+  }
 
   sendGetState() {
-    const id = this.createCommandId();
-    this.send({ action: 'getState', id });
-    return id;
+    return this.sendCommand('getState');
   }
 
   sendTarget(target) {
-    const id = this.createCommandId();
-    const sent = this.send({ action: 'setTarget', target, id });
-    return { sent, id, target };
+    const p = this.sendCommand('setTarget', { target });
+    p.target = target;
+    return p;
   }
 
   sendPower(enabled) {
-    const id = this.createCommandId();
-    const sent = this.send({ action: 'setPower', enabled, id });
-    return { sent, id, enabled };
+    const p = this.sendCommand('setPower', { enabled });
+    p.enabled = enabled;
+    return p;
   }
 
   sendLight(light) {
-    const id = this.createCommandId();
-    const sent = this.send({ action: 'setLight', light, id });
-    return { sent, id, light };
+    const p = this.sendCommand('setLight', { light });
+    p.light = light;
+    return p;
   }
 
-  handleIncomingMessage(data) {
-    if (!data || typeof data !== 'object') return;
+  handleIncomingMessage(rawData) {
+    let parsed;
+    try {
+      parsed = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+    } catch (e) {
+      console.warn('[ESP32] Error parseando JSON entrante:', e);
+      return;
+    }
 
-    // Normalización de telemetría proveniente del ESP32
-    this.notifyListeners(data);
+    const { valid, sanitized } = validateEsp32Telemetry(parsed);
+    if (!valid || !sanitized) return;
+
+    // 1. Correlación de comandos pendientes mediante ack explícito
+    if (sanitized.ack && this.pendingCommands.has(sanitized.ack)) {
+      const pending = this.pendingCommands.get(sanitized.ack);
+      clearTimeout(pending.timeoutTimer);
+      this.pendingCommands.delete(sanitized.ack);
+      pending.resolve(sanitized);
+    } else {
+      // Correlación de respaldo por valor si el firmware no envía ack explícito
+      for (const [id, pending] of this.pendingCommands.entries()) {
+        let matches = false;
+        if (pending.action === 'setTarget' && sanitized.targetTemperature === pending.payload.target) {
+          matches = true;
+        } else if (pending.action === 'setPower' && sanitized.power === pending.payload.enabled) {
+          matches = true;
+        } else if (pending.action === 'setLight' && sanitized.light === pending.payload.light) {
+          matches = true;
+        } else if (pending.action === 'getState') {
+          matches = true;
+        }
+
+        if (matches) {
+          clearTimeout(pending.timeoutTimer);
+          this.pendingCommands.delete(id);
+          pending.resolve(sanitized);
+          break;
+        }
+      }
+    }
+
+    // 2. Notificación a los componentes con telemetría sanitizada
+    this.notifyListeners(sanitized);
   }
 
-  // Suscripciones
   onMessage(callback) {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);

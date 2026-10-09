@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { QrCode, ArrowLeft } from 'lucide-react';
 import { calcProgressPercent, SCALE_MARKS } from '../constants/climate';
 
-export function Screen({ target, actual, status, led, isStale }) {
+export function Screen({ target, actual, status, led, isStale, activeMode }) {
   const [showQr, setShowQr] = useState(false);
   const [countdown, setCountdown] = useState(10);
 
@@ -114,7 +114,11 @@ export function Screen({ target, actual, status, led, isStale }) {
           <div className="screenfooter">
             <div>
               <span className="tiny">
-                {isStale ? 'TEMPERATURA (ÚLTIMA LECTURA)' : 'TEMPERATURA SIMULADA'}
+                {isStale
+                  ? 'TEMPERATURA (ÚLTIMA LECTURA)'
+                  : activeMode === 'connected'
+                    ? 'TEMPERATURA ESP32'
+                    : 'TEMPERATURA SIMULADA'}
               </span>
               <strong>{actual.toFixed(1)} °C</strong>
             </div>

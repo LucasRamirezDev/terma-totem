@@ -137,11 +137,31 @@ El sistema opera con **tres ventiladores de 12V en paralelo** comandados por una
 
 ---
 
+## 💡 Tira de 9 LED RGB WS2812B y Botón LUZ
+
+El prototipo utiliza una única tira de nueve LED direccionables WS2812B:
+* **Botón LUZ:** Activa o desactiva la iluminación de la tira (`setLight: true/false`).
+* **Comportamiento cuando la luz está ENCENDIDA:** Los 9 LED reproducen físicamente el estado del sistema:
+  * **Apagado:** Rojo fijo (`red`).
+  * **Calentando:** Verde intermitente (`blink-green`).
+  * **Estable:** Verde fijo (`green`).
+  * **Enfriando:** Celeste intermitente (`blink-cyan`).
+* **Comportamiento cuando la luz está APAGADA:**
+  * Los 9 LED permanecen apagados (negro/0).
+  * Los ventiladores continúan operando normalmente con su señal PWM.
+  * El control térmico y la simulación continúan activos.
+  * El indicador en pantalla continúa informando el estado del sistema.
+
+---
+
 ## 🛠️ Comandos de Desarrollo
 
 ```bash
-# Servidor de desarrollo con Hot Reload
+# Servidor de desarrollo local con Vite
 npm run dev
+
+# Suite de pruebas automatizadas (Node test runner)
+npm test
 
 # Compilar para producción (carpeta dist/)
 npm run build
@@ -149,3 +169,13 @@ npm run build
 # Previsualizar build de producción
 npm run preview
 ```
+
+---
+
+## 📱 Preparación para Android y Capacitor (Próxima Etapa)
+
+* La aplicación no depende de ningún servicio externo obligatorio para su lógica ni utiliza `window.location.host` para conectarse al microcontrolador.
+* Para operar en modo 100% offline dentro de una APK de Android sin acceso a internet:
+  * Empaquetar localmente las fuentes tipográficas (`DM Sans` y `Space Grotesk`) en lugar de depender de Google Fonts online.
+  * Todos los assets (`icono-terma.png`, `icono-qr.png`, `qr.svg`) residen localmente en `/public`.
+

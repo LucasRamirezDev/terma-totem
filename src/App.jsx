@@ -40,6 +40,7 @@ export function App() {
           status={status}
           led={led}
           isStale={isStale}
+          activeMode={activeMode}
         />
 
         <Controls

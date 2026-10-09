@@ -66,19 +66,112 @@ export function getLedPresentation(ledMode) {
 
 /**
  * Calcula el ciclo de trabajo PWM (0 a 100%) para el control común
- * de los 3 ventiladores de 12V según demanda térmica.
+ * de los 3 ventiladores de 12V según demanda térmica:
+ * 
+ * Fórmula:
+ * - Apagado: 0%
+ * - En demanda (|consigna - actual| > 0.3°C):
+ *     clamp(round(40 + |consigna - actual| * 12), 35, 100)
+ * - En reposo / estable (|consigna - actual| <= 0.3°C):
+ *     30% (recirculación de aire base)
+ * 
+ * Soporta ambas firmas:
+ * - calculateFanPwm(power, target, actual)
+ * - calculateFanPwm(power, heating, cooling, target, actual) [retrocompatible]
  * 
  * NOTA: Representa porcentaje de comando PWM, no RPM medidas físicamente.
  */
-export function calculateFanPwm(power, heating, cooling, target, actual) {
+export function calculateFanPwm(power, arg1, arg2, arg3, arg4) {
   if (!power) return 0;
-  if (heating) {
-    return Math.min(100, Math.max(35, Math.round(40 + (target - actual) * 12)));
+
+  let target;
+  let actual;
+
+  if (typeof arg3 === 'number' && typeof arg4 === 'number') {
+    // Firma extendida: (power, heating, cooling, target, actual)
+    target = arg3;
+    actual = arg4;
+  } else if (typeof arg1 === 'number' && typeof arg2 === 'number') {
+    // Firma directa: (power, target, actual)
+    target = arg1;
+    actual = arg2;
+  } else {
+    return 30;
   }
-  if (cooling) {
-    return Math.min(100, Math.max(35, Math.round(40 + (actual - target) * 12)));
+
+  const diff = Math.abs(target - actual);
+  if (diff > TEMP_TOLERANCE) {
+    return Math.min(100, Math.max(35, Math.round(40 + diff * 12)));
   }
   return 30; // Velocidad de recirculación base en reposo
+}
+
+/**
+ * Valida y sanitiza cualquier payload JSON recibido desde el ESP32-S3.
+ * Protege a React de campos inexistentes, tipos corruptos, NaN o valores fuera de rango.
+ */
+export function validateEsp32Telemetry(data) {
+  if (!data || typeof data !== 'object') {
+    return { valid: false, error: 'Payload no es un objeto válido', sanitized: null };
+  }
+
+  const sanitized = {};
+
+  // Correlación de comando (ack)
+  if (typeof data.ack === 'string' && data.ack.trim().length > 0) {
+    sanitized.ack = data.ack.trim();
+  }
+
+  // Temperatura actual simulada/leída en el ESP32 (rango admisible: -20 °C a 85 °C)
+  if (typeof data.actualTemperature === 'number' && !Number.isNaN(data.actualTemperature)) {
+    if (data.actualTemperature >= -20 && data.actualTemperature <= 85) {
+      sanitized.actualTemperature = Math.round(data.actualTemperature * 10) / 10;
+    }
+  }
+
+  // Temperatura objetivo consignada (acotada entre MIN_TEMP y MAX_TEMP)
+  if (typeof data.targetTemperature === 'number' && !Number.isNaN(data.targetTemperature)) {
+    sanitized.targetTemperature = Math.max(
+      MIN_TEMP,
+      Math.min(MAX_TEMP, Math.round(data.targetTemperature * 10) / 10)
+    );
+  }
+
+  // Encendido del sistema
+  if (typeof data.power === 'boolean') {
+    sanitized.power = data.power;
+  }
+
+  // Luz auxiliar (tira de 9 LED WS2812B)
+  if (typeof data.light === 'boolean') {
+    sanitized.light = data.light;
+  }
+
+  // Ciclo de trabajo PWM común para los 3 ventiladores (0% a 100%)
+  if (typeof data.fanSpeed === 'number' && !Number.isNaN(data.fanSpeed)) {
+    sanitized.fanSpeed = Math.max(0, Math.min(100, Math.round(data.fanSpeed)));
+  }
+
+  // Estado del sistema ('apagado', 'calentando', 'enfriando', 'estable')
+  if (typeof data.systemStatus === 'string') {
+    const s = data.systemStatus.toLowerCase().trim();
+    if (Object.values(SYSTEM_STATUS).includes(s)) {
+      sanitized.systemStatus = s;
+    }
+  }
+
+  // Modo del indicador LED RGB ('red', 'blink-green', 'blink-cyan', 'green')
+  if (typeof data.ledMode === 'string') {
+    const l = data.ledMode.toLowerCase().trim();
+    if (Object.values(LED_MODES).includes(l)) {
+      sanitized.ledMode = l;
+    }
+  }
+
+  return {
+    valid: Object.keys(sanitized).length > 0,
+    sanitized,
+  };
 }
 
 /**

@@ -15,7 +15,6 @@ export function SimulationBar({
   const handleSaveIp = (e) => {
     e.preventDefault();
     onSetEspIp(ipInput);
-    onReconnect();
     setShowConfig(false);
   };
 
@@ -26,7 +25,6 @@ export function SimulationBar({
 
   const handleSwitchToAuto = () => {
     onSetMode('auto');
-    onReconnect();
     setShowConfig(false);
   };
 

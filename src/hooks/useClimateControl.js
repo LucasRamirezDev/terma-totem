@@ -64,9 +64,9 @@ export function useClimateControl() {
     lastUpdate: null,
   });
 
-  // Comando en tránsito hacia el ESP32
+  // Seguimiento de consigna en tránsito para comandos consecutivos seguros
+  const pendingTargetRef = useRef(null);
   const [pendingCommand, setPendingCommand] = useState(null);
-  const pendingTimerRef = useRef(null);
 
   // =========================================================================
   // CONEXIÓN Y SUSCRIPCIÓN A TELEMETRÍA DEL ESP32
@@ -80,10 +80,14 @@ export function useClimateControl() {
 
     const unsubscribeStatus = esp32.onStatusChange(status => {
       setEspState(status);
+      if (!status.connected) {
+        pendingTargetRef.current = null;
+        setPendingCommand(null);
+      }
     });
 
     const unsubscribeData = esp32.onMessage(data => {
-      // Telemetría oficial transmitida por el firmware del ESP32-S3
+      // Telemetría oficial transmitida y ya sanitizada desde el firmware del ESP32-S3
       setConnectedState(prev => {
         const next = { ...prev, lastUpdate: Date.now() };
 
@@ -100,10 +104,10 @@ export function useClimateControl() {
           next.light = data.light;
         }
         if (typeof data.fanSpeed === 'number') {
-          next.fanSpeed = Math.max(0, Math.min(100, data.fanSpeed));
+          next.fanSpeed = data.fanSpeed;
         }
         if (typeof data.systemStatus === 'string') {
-          next.systemStatus = data.systemStatus.toLowerCase();
+          next.systemStatus = data.systemStatus;
         }
         if (typeof data.ledMode === 'string') {
           next.ledMode = data.ledMode;
@@ -112,15 +116,14 @@ export function useClimateControl() {
         return next;
       });
 
-      // Si el mensaje confirma o refleja un comando pendiente, liberarlo
-      setPendingCommand(prev => {
-        if (!prev) return null;
-        if (data.ack === prev.id) return null;
-        if (prev.action === 'setTarget' && data.targetTemperature === prev.value) return null;
-        if (prev.action === 'setPower' && data.power === prev.value) return null;
-        if (prev.action === 'setLight' && data.light === prev.value) return null;
-        return prev;
-      });
+      // Liberar referencia en tránsito si la temperatura recibida coincide con la consigna esperada
+      if (pendingTargetRef.current !== null && data.targetTemperature === pendingTargetRef.current) {
+        pendingTargetRef.current = null;
+      }
+
+      if (esp32.getPendingCount() === 0) {
+        setPendingCommand(null);
+      }
     });
 
     return () => {
@@ -128,17 +131,6 @@ export function useClimateControl() {
       unsubscribeData();
     };
   }, [userMode]);
-
-  // Timeout para comandos pendientes (3 segundos sin respuesta)
-  useEffect(() => {
-    if (pendingCommand) {
-      clearTimeout(pendingTimerRef.current);
-      pendingTimerRef.current = setTimeout(() => {
-        setPendingCommand(null);
-      }, 3000);
-    }
-    return () => clearTimeout(pendingTimerRef.current);
-  }, [pendingCommand]);
 
   // =========================================================================
   // DETERMINACIÓN DEL MODO DE OPERACIÓN ACTIVO
@@ -173,8 +165,6 @@ export function useClimateControl() {
 
   const simFanPwm = calculateFanPwm(
     simState.power,
-    simHeating,
-    simCooling,
     simState.target,
     simState.actual
   );
@@ -235,7 +225,7 @@ export function useClimateControl() {
 
   const { className: ledClassName, label: ledLabel } = getLedPresentation(rawLedMode);
 
-  // Emisión de evento en ventana para integraciones o herramientas locales
+  // Emisión de evento en ventana para telemetría o testing
   useEffect(() => {
     const payload = {
       mode: activeMode,
@@ -266,54 +256,98 @@ export function useClimateControl() {
 
   // =========================================================================
   // CONTROLADORES DE ACCIONES DE USUARIO
-  // En modo Simulación: modifican el estado local.
+  // En modo Simulación: modifican el estado local reactivo.
   // En modo Conectado: transmiten el comando al ESP32 sin mutación optimista prematura.
   // =========================================================================
   const increaseTemp = useCallback(() => {
-    const nextTemp = Math.min(MAX_TEMP, Math.round((currentTarget + TEMP_STEP) * 10) / 10);
-    if (nextTemp === currentTarget) return;
-
     if (activeMode === CONNECTION_MODE.SIMULATION) {
-      setSimState(prev => ({ ...prev, target: nextTemp }));
+      const nextTemp = Math.min(MAX_TEMP, Math.round((simState.target + TEMP_STEP) * 10) / 10);
+      if (nextTemp !== simState.target) {
+        setSimState(prev => ({ ...prev, target: nextTemp }));
+      }
     } else if (activeMode === CONNECTION_MODE.CONNECTED) {
-      const { id } = esp32.sendTarget(nextTemp);
-      setPendingCommand({ action: 'setTarget', value: nextTemp, id });
+      const baseTarget = pendingTargetRef.current !== null ? pendingTargetRef.current : connectedState.target;
+      const nextTemp = Math.min(MAX_TEMP, Math.round((baseTarget + TEMP_STEP) * 10) / 10);
+      if (nextTemp === baseTarget) return;
+
+      pendingTargetRef.current = nextTemp;
+      setPendingCommand({ action: 'setTarget', value: nextTemp });
+      esp32.sendTarget(nextTemp)
+        .then(() => {
+          if (pendingTargetRef.current === nextTemp) {
+            pendingTargetRef.current = null;
+          }
+        })
+        .catch(err => {
+          console.warn('[TERMA] Error enviando consigna:', err.message);
+          if (pendingTargetRef.current === nextTemp) {
+            pendingTargetRef.current = null;
+          }
+        })
+        .finally(() => {
+          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+        });
     }
-  }, [currentTarget, activeMode]);
+  }, [activeMode, simState.target, connectedState.target]);
 
   const decreaseTemp = useCallback(() => {
-    const nextTemp = Math.max(MIN_TEMP, Math.round((currentTarget - TEMP_STEP) * 10) / 10);
-    if (nextTemp === currentTarget) return;
-
     if (activeMode === CONNECTION_MODE.SIMULATION) {
-      setSimState(prev => ({ ...prev, target: nextTemp }));
+      const nextTemp = Math.max(MIN_TEMP, Math.round((simState.target - TEMP_STEP) * 10) / 10);
+      if (nextTemp !== simState.target) {
+        setSimState(prev => ({ ...prev, target: nextTemp }));
+      }
     } else if (activeMode === CONNECTION_MODE.CONNECTED) {
-      const { id } = esp32.sendTarget(nextTemp);
-      setPendingCommand({ action: 'setTarget', value: nextTemp, id });
+      const baseTarget = pendingTargetRef.current !== null ? pendingTargetRef.current : connectedState.target;
+      const nextTemp = Math.max(MIN_TEMP, Math.round((baseTarget - TEMP_STEP) * 10) / 10);
+      if (nextTemp === baseTarget) return;
+
+      pendingTargetRef.current = nextTemp;
+      setPendingCommand({ action: 'setTarget', value: nextTemp });
+      esp32.sendTarget(nextTemp)
+        .then(() => {
+          if (pendingTargetRef.current === nextTemp) {
+            pendingTargetRef.current = null;
+          }
+        })
+        .catch(err => {
+          console.warn('[TERMA] Error enviando consigna:', err.message);
+          if (pendingTargetRef.current === nextTemp) {
+            pendingTargetRef.current = null;
+          }
+        })
+        .finally(() => {
+          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+        });
     }
-  }, [currentTarget, activeMode]);
+  }, [activeMode, simState.target, connectedState.target]);
 
   const togglePower = useCallback(() => {
-    const nextPower = !currentPower;
-
     if (activeMode === CONNECTION_MODE.SIMULATION) {
-      setSimState(prev => ({ ...prev, power: nextPower }));
+      setSimState(prev => ({ ...prev, power: !prev.power }));
     } else if (activeMode === CONNECTION_MODE.CONNECTED) {
-      const { id } = esp32.sendPower(nextPower);
-      setPendingCommand({ action: 'setPower', value: nextPower, id });
+      const nextPower = !connectedState.power;
+      setPendingCommand({ action: 'setPower', value: nextPower });
+      esp32.sendPower(nextPower)
+        .catch(err => console.warn('[TERMA] Error enviando encendido:', err.message))
+        .finally(() => {
+          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+        });
     }
-  }, [currentPower, activeMode]);
+  }, [activeMode, connectedState.power]);
 
   const toggleLight = useCallback(() => {
-    const nextLight = !currentLight;
-
     if (activeMode === CONNECTION_MODE.SIMULATION) {
-      setSimState(prev => ({ ...prev, light: nextLight }));
+      setSimState(prev => ({ ...prev, light: !prev.light }));
     } else if (activeMode === CONNECTION_MODE.CONNECTED) {
-      const { id } = esp32.sendLight(nextLight);
-      setPendingCommand({ action: 'setLight', value: nextLight, id });
+      const nextLight = !connectedState.light;
+      setPendingCommand({ action: 'setLight', value: nextLight });
+      esp32.sendLight(nextLight)
+        .catch(err => console.warn('[TERMA] Error enviando luz auxiliar:', err.message))
+        .finally(() => {
+          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+        });
     }
-  }, [currentLight, activeMode]);
+  }, [activeMode, connectedState.light]);
 
   // Control explícito de modo (Simulación vs Hardware)
   const setMode = useCallback((mode) => {
@@ -336,6 +370,11 @@ export function useClimateControl() {
 
   const reconnect = useCallback(() => {
     setUserMode('auto');
+    try {
+      localStorage.setItem('TERMA_op_mode', 'auto');
+    } catch {
+      // Ignorar errores
+    }
     esp32.reconnect();
   }, []);
 
