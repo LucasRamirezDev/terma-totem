@@ -1,6 +1,6 @@
 /*
   ==============================================================
-  ENVERO - Firmware de Referencia para ESP32-S3 (Servidor WebSocket)
+  TERMA - Firmware de Referencia para ESP32-S3 (Servidor WebSocket)
   ==============================================================
   Controlador principal del sistema físico de climatización:
   - Servidor WebSocket asíncrono en "/ws"
@@ -23,11 +23,11 @@
 #include <ArduinoJson.h>
 
 // Modo WiFi:
-// Si USE_ACCESS_POINT está en true, el ESP32 crea su propia red "ENVERO-AP" (IP 192.168.4.1)
+// Si USE_ACCESS_POINT está en true, el ESP32 crea su propia red "TERMA-AP" (IP 192.168.4.1)
 // Si está en false, se conecta al router WiFi configurado.
 const bool USE_ACCESS_POINT = true;
-const char* AP_SSID = "ENVERO-TOTEM";
-const char* AP_PASS = "envero1234";
+const char* AP_SSID = "TERMA-TOTEM";
+const char* AP_PASS = "TERMA1234";
 
 const char* STA_SSID = "TU_WIFI_SSID";
 const char* STA_PASS = "TU_WIFI_PASSWORD";

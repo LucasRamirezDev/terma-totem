@@ -15,7 +15,7 @@ import {
 import { esp32 } from '../services/esp32Client';
 
 /**
- * ENVERO - Hook de Control Climático
+ * TERMA - Hook de Control Climático
  * 
  * Separa estrictamente:
  * 1. MODO SIMULACIÓN: Motor de física local en React cuando se prueba sin hardware.
@@ -26,7 +26,7 @@ export function useClimateControl() {
   // Modo de operación seleccionado por el usuario: 'auto' (intenta conectar a ESP32) o 'simulation' (forzado offline)
   const [userMode, setUserMode] = useState(() => {
     try {
-      return localStorage.getItem('envero_op_mode') || 'auto';
+      return localStorage.getItem('TERMA_op_mode') || 'auto';
     } catch {
       return 'auto';
     }
@@ -250,7 +250,7 @@ export function useClimateControl() {
       isStale: activeMode === CONNECTION_MODE.DISCONNECTED && connectedState.lastUpdate !== null,
     };
 
-    window.dispatchEvent(new CustomEvent('envero:state', { detail: payload }));
+    window.dispatchEvent(new CustomEvent('TERMA:state', { detail: payload }));
   }, [
     activeMode,
     currentPower,
@@ -319,7 +319,7 @@ export function useClimateControl() {
   const setMode = useCallback((mode) => {
     setUserMode(mode);
     try {
-      localStorage.setItem('envero_op_mode', mode);
+      localStorage.setItem('TERMA_op_mode', mode);
     } catch {
       // Ignorar errores
     }

@@ -71,7 +71,7 @@ export function SimulationBar({
             ? 'Motor de simulación térmica local activo'
             : isStale
               ? 'Conexión perdida · Mostrando último estado confirmado'
-              : 'Interfaz ENVERO · Enlace con firmware ESP32-S3'}
+              : 'Interfaz TERMA · Enlace con firmware ESP32-S3'}
         </span>
       </div>
 

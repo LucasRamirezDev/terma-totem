@@ -1,5 +1,5 @@
 /**
- * ENVERO - Constantes del sistema de climatización y protocolo ESP32-S3
+ * TERMA - Constantes del sistema de climatización y protocolo ESP32-S3
  */
 
 // Rangos térmicos de operación

@@ -1,5 +1,5 @@
 /**
- * ENVERO - Cliente de comunicación WebSocket con ESP32-S3
+ * TERMA - Cliente de comunicación WebSocket con ESP32-S3
  * 
  * Gestiona el ciclo de vida del enlace WebSocket, reconexiones controladas,
  * envío de comandos etiquetados y sincronización de estado.
@@ -24,7 +24,7 @@ class ESP32Client {
 
   getStoredIp() {
     try {
-      const stored = localStorage.getItem('envero_esp32_ip');
+      const stored = localStorage.getItem('TERMA_esp32_ip');
       if (stored && stored.trim().length > 0) {
         return stored.trim();
       }
@@ -40,9 +40,9 @@ class ESP32Client {
 
     try {
       if (cleanIp) {
-        localStorage.setItem('envero_esp32_ip', cleanIp);
+        localStorage.setItem('TERMA_esp32_ip', cleanIp);
       } else {
-        localStorage.removeItem('envero_esp32_ip');
+        localStorage.removeItem('TERMA_esp32_ip');
       }
     } catch {
       // Ignorar errores de almacenamiento
@@ -227,7 +227,7 @@ class ESP32Client {
     return `cmd_${Date.now()}_${this.cmdCounter}`;
   }
 
-  // Comandos estándar del protocolo ENVERO hacia el ESP32
+  // Comandos estándar del protocolo TERMA hacia el ESP32
 
   sendGetState() {
     const id = this.createCommandId();

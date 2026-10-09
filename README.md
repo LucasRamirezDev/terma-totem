@@ -1,4 +1,4 @@
-# ENVERO · Tótem de Control Climático para Invernaderos
+# TERMA · Tótem de Control Climático para Invernaderos
 
 Interfaz de control climático táctil e interactiva desarrollada con **React 19** y **Vite**, preparada para gobernar microcontroladores **ESP32 / ESP32-S3** mediante **WebSocket** en tiempo real.
 
@@ -22,11 +22,11 @@ El sistema divide estrictamente el rol del frontend web y del microcontrolador p
 ## 📁 Estructura del Código
 
 ```text
-envero-totem/
+TERMA-totem/
 ├── index.html                   # Punto de entrada HTML (monta /src/main.jsx)
 ├── README.md                    # Documentación arquitectónica y de protocolo
 ├── esp32/
-│   └── envero_esp32_example.ino # Firmware de referencia para ESP32-S3 con AsyncWebSocket
+│   └── terma_esp32_example.ino # Firmware de referencia para ESP32-S3 con AsyncWebSocket
 ├── src/
 │   ├── main.jsx                 # Bootstrap de React (createRoot)
 │   ├── App.jsx                  # Coordinador de componentes visuales y estados
