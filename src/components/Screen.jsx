@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Leaf, QrCode, ArrowLeft } from 'lucide-react';
+import { QrCode, ArrowLeft } from 'lucide-react';
 import { calcProgressPercent, SCALE_MARKS } from '../constants/climate';
 
 export function Screen({ target, actual, status, led, isStale }) {
@@ -91,8 +91,8 @@ export function Screen({ target, actual, status, led, isStale }) {
               title="Click para ver código QR de la aplicación"
               aria-label="Mostrar código QR de la aplicación"
             >
-              <Leaf size={51} strokeWidth={1.4} />
-              <span>TERMA</span>
+              <img src="/icono-qr.png" alt="Abrir QR" className="qr-trigger-icon" />
+              <span>ENVERO</span>
             </button>
           </div>
 
