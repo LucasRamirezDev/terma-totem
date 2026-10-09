@@ -3,28 +3,42 @@
   TERMA - Firmware de Referencia para ESP32-S3 (Servidor WebSocket)
   ==============================================================
   Controlador principal del sistema físico de climatización:
-  - Servidor WebSocket asíncrono en "/ws"
-  - Punto de acceso WiFi propio (IP 192.168.4.1) o cliente de red local
-  - Control PWM unificado a 25 kHz para 3 ventiladores de 12V
-  - Control de calefactor y refrigeración/ventilación
-  - Modos de LED RGB: red (apagado), blink-green (calentando), blink-cyan (enfriando), green (estable)
-  - Control independiente de iluminación auxiliar
-  - Motor térmico y de sensores en el propio microcontrolador
+  - Servidor WebSocket asíncrono en "/ws" (Puerto 80)
+  - Punto de acceso WiFi propio "TERMA-TOTEM" (IP 192.168.4.1) o cliente de red local
+  - Control PWM unificado a 25 kHz para 3 ventiladores de 12V (4 pines PWM)
+  - Control de tira de 9 LED RGB WS2812B con animaciones no bloqueantes (millis)
+  - Los 4 estados visuales: red (apagado), blink-green (calentando), blink-cyan (enfriando), green (estable)
+  - El botón LUZ habilita/deshabilita la tira; cuando está apagada, los 9 LED permanecen en negro sin detener ventiladores ni simulación
+  - Protocolo de confirmación explícita mediante 'ack' y telemetría JSON
+  - Motor de simulación térmica autónoma en el ESP32 (mantiene control si React se desconecta)
 
-  Librerías requeridas:
+  COMPATIBILIDAD DE NÚCLEO ARDUINO-ESP32:
+  - Compatible con Arduino-ESP32 Core v2.0.x y Core v3.x mediante macros condicionales LEDC.
+
+  LIBRERÍAS REQUERIDAS:
   - ESPAsyncWebServer (https://github.com/me-no-dev/ESPAsyncWebServer)
   - AsyncTCP (https://github.com/me-no-dev/AsyncTCP)
   - ArduinoJson (v6 o v7)
+  - Adafruit_NeoPixel (v1.11.0 o superior)
+
+  CONSIDERACIONES ELÉCTRICAS IMPORTANTES:
+  - NO alimentar los ventiladores de 12V ni la tira WS2812B desde el regulador 3.3V del ESP32.
+  - Los 3 ventiladores deben alimentarse de una fuente externa de 12V DC, compartiendo GND con el ESP32.
+  - La tira WS2812B de 9 LED debe alimentarse de una fuente de 5V DC regulada, compartiendo GND con el ESP32.
+  - La señal PWM del pin GPIO (3.3V) se conecta a la línea de control PWM de los 3 ventiladores en paralelo.
 */
 
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
+#include <Adafruit_NeoPixel.h>
 
-// Modo WiFi:
-// Si USE_ACCESS_POINT está en true, el ESP32 crea su propia red "TERMA-AP" (IP 192.168.4.1)
-// Si está en false, se conecta al router WiFi configurado.
+// ==============================================================
+// CONFIGURACIÓN DE RED WIFI
+// ==============================================================
+// Si USE_ACCESS_POINT está en true, el ESP32 crea su propia red "TERMA-TOTEM" (IP 192.168.4.1)
+// Si está en false, se conecta al router WiFi configurado en STA.
 const bool USE_ACCESS_POINT = true;
 const char* AP_SSID = "TERMA-TOTEM";
 const char* AP_PASS = "TERMA1234";
@@ -37,49 +51,127 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
 // ==============================================================
+// ASIGNACIÓN DE PINES (GPIO) EN ESP32-S3
+// ==============================================================
+// Control PWM común para los 3 ventiladores de 12V (4 pines)
+const int PIN_FAN_PWM = 21;
+
+// Pin de datos para la tira de 9 LED WS2812B
+const int PIN_WS2812B = 48;
+const int NUM_LEDS = 9;
+
+// ==============================================================
+// CONFIGURACIÓN PWM (25 kHz Estándar Intel 4-Wire Fans)
+// ==============================================================
+const int PWM_FREQ = 25000;
+const int PWM_RESOLUTION = 8; // 0 a 255
+const int PWM_CHANNEL = 0;    // Para núcleos v2.x
+
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  inline void initFanPwm() {
+    ledcAttach(PIN_FAN_PWM, PWM_FREQ, PWM_RESOLUTION);
+  }
+  inline void writeFanPwm(int duty) {
+    ledcWrite(PIN_FAN_PWM, duty);
+  }
+#else
+  inline void initFanPwm() {
+    ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttachPin(PIN_FAN_PWM, PWM_CHANNEL);
+  }
+  inline void writeFanPwm(int duty) {
+    ledcWrite(PWM_CHANNEL, duty);
+  }
+#endif
+
+// ==============================================================
+// TIRA DE 9 LED RGB WS2812B
+// ==============================================================
+Adafruit_NeoPixel strip(NUM_LEDS, PIN_WS2812B, NEO_GRB + NEO_KHZ800);
+
+// ==============================================================
 // VARIABLES DE ESTADO FÍSICO (Fuente de verdad del sistema)
 // ==============================================================
-float targetTemperature = 18.0;   // Consigna (°C)
-float actualTemperature = 20.0;   // Temperatura de sensores (°C)
-bool powerEnabled = false;        // Sistema encendido/apagado
-bool lightEnabled = true;         // Luz auxiliar de cultivo (independiente de LED RGB)
-int fanSpeed = 0;                 // Ciclo de trabajo PWM común para los 3 ventiladores (0 a 100%)
+float targetTemperature = 18.0;   // Consigna (°C) [15.0 a 30.0]
+float actualTemperature = 20.0;   // Temperatura simulada en firmware (°C)
+bool powerEnabled = false;        // Encendido general del sistema
+bool lightEnabled = true;         // Habilitación de la tira WS2812B
+int fanSpeed = 0;                 // Ciclo de trabajo PWM común (0 a 100%)
 String systemStatus = "apagado";  // "apagado" | "calentando" | "enfriando" | "estable"
 String ledMode = "red";           // "red" | "blink-green" | "blink-cyan" | "green"
 
-// Pines de actuadores (ajustar según placa ESP32-S3)
-const int PIN_HEATER = 18;        // Relé / MOSFET Calefactor
-const int PIN_COOLER = 19;        // Relé / MOSFET Enfriador o extracción
-const int PIN_FAN_PWM = 21;       // Señal PWM común para los 3 ventiladores de 12V
-const int PIN_GROW_LIGHT = 22;    // Relé Iluminación auxiliar
+// Control temporal de parpadeo de LED sin delay()
+unsigned long lastLedBlinkTick = 0;
+bool ledBlinkState = false;
 
-// Configuración PWM de ventiladores (25 kHz estándar para ventiladores de 12V)
-const int PWM_FREQ = 25000;
-const int PWM_RESOLUTION = 8;     // 0 a 255
-const int PWM_CHANNEL = 0;
-
-void applyActuators() {
-  // 1. Control de ventiladores (PWM común)
+// ==============================================================
+// ACTUALIZACIÓN DE ACTUADORES FÍSICOS
+// ==============================================================
+void applyFanPwm() {
   int dutyCycle = map(fanSpeed, 0, 100, 0, 255);
-  ledcWrite(PWM_CHANNEL, dutyCycle);
+  writeFanPwm(dutyCycle);
+}
 
-  // 2. Control térmico
-  if (!powerEnabled) {
-    digitalWrite(PIN_HEATER, LOW);
-    digitalWrite(PIN_COOLER, LOW);
-  } else if (systemStatus == "calentando") {
-    digitalWrite(PIN_HEATER, HIGH);
-    digitalWrite(PIN_COOLER, LOW);
-  } else if (systemStatus == "enfriando") {
-    digitalWrite(PIN_HEATER, LOW);
-    digitalWrite(PIN_COOLER, HIGH);
-  } else {
-    digitalWrite(PIN_HEATER, LOW);
-    digitalWrite(PIN_COOLER, LOW);
+void updateLeds() {
+  // Si el botón LUZ está desactivado, todos los LED permanecen apagados
+  if (!lightEnabled) {
+    strip.clear();
+    strip.show();
+    return;
   }
 
-  // 3. Luz auxiliar
-  digitalWrite(PIN_GROW_LIGHT, lightEnabled ? HIGH : LOW);
+  // Alternancia de parpadeo cada 500 ms sin bloqueo
+  if (millis() - lastLedBlinkTick >= 500) {
+    lastLedBlinkTick = millis();
+    ledBlinkState = !ledBlinkState;
+  }
+
+  uint32_t color = 0;
+
+  if (ledMode == "red") {
+    // Apagado: Rojo fijo
+    color = strip.Color(255, 0, 0);
+  } else if (ledMode == "blink-green") {
+    // Calentando: Verde intermitente
+    color = ledBlinkState ? strip.Color(0, 255, 60) : strip.Color(0, 0, 0);
+  } else if (ledMode == "blink-cyan") {
+    // Enfriando: Celeste intermitente
+    color = ledBlinkState ? strip.Color(0, 220, 255) : strip.Color(0, 0, 0);
+  } else if (ledMode == "green") {
+    // Estable: Verde fijo
+    color = strip.Color(0, 255, 60);
+  } else {
+    color = strip.Color(0, 255, 60);
+  }
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, color);
+  }
+  strip.show();
+}
+
+// ==============================================================
+// TRANSMISIÓN DE TELEMETRÍA Y RESPUESTAS ACK
+// ==============================================================
+void sendAck(AsyncWebSocketClient* client, const char* ackId, bool success, const char* msg = nullptr) {
+  if (ackId == nullptr || strlen(ackId) == 0) return;
+
+  StaticJsonDocument<256> doc;
+  doc["type"] = "ack";
+  doc["ack"] = ackId;
+  doc["success"] = success;
+  doc["status"] = success ? "ok" : "error";
+  if (msg != nullptr) {
+    doc["message"] = msg;
+  }
+
+  String output;
+  serializeJson(doc, output);
+  if (client != nullptr) {
+    client->text(output);
+  } else {
+    ws.textAll(output);
+  }
 }
 
 void broadcastState(const char* ackId = nullptr) {
@@ -102,7 +194,10 @@ void broadcastState(const char* ackId = nullptr) {
   ws.textAll(output);
 }
 
-void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
+// ==============================================================
+// PROCESAMIENTO DE COMANDOS WEBSOCKET DESDE REACT
+// ==============================================================
+void handleWebSocketMessage(AsyncWebSocketClient *client, void *arg, uint8_t *data, size_t len) {
   AwsFrameInfo *info = (AwsFrameInfo*)arg;
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
     StaticJsonDocument<256> doc;
@@ -115,29 +210,48 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
     if (!action) return;
 
     if (strcmp(action, "setTarget") == 0) {
-      if (doc.containsKey("target")) {
-        targetTemperature = doc["target"];
-        Serial.printf("[ESP32] setTarget -> %.1f °C (id: %s)\n", targetTemperature, cmdId);
+      if (doc.containsKey("target") && doc["target"].is<float>()) {
+        float nextTarget = doc["target"];
+        if (nextTarget >= 15.0 && nextTarget <= 30.0) {
+          targetTemperature = round(nextTarget * 10.0) / 10.0;
+          Serial.printf("[ESP32] setTarget -> %.1f °C (id: %s)\n", targetTemperature, cmdId);
+          sendAck(client, cmdId, true, "Consigna actualizada");
+          broadcastState(cmdId);
+        } else {
+          sendAck(client, cmdId, false, "Temperatura objetivo fuera de rango [15.0, 30.0]");
+        }
+      } else {
+        sendAck(client, cmdId, false, "Campo 'target' invalido o ausente");
       }
     } 
     else if (strcmp(action, "setPower") == 0) {
-      if (doc.containsKey("enabled")) {
+      if (doc.containsKey("enabled") && doc["enabled"].is<bool>()) {
         powerEnabled = doc["enabled"];
         Serial.printf("[ESP32] setPower -> %s (id: %s)\n", powerEnabled ? "ON" : "OFF", cmdId);
+        sendAck(client, cmdId, true, "Estado de alimentacion actualizado");
+        broadcastState(cmdId);
+      } else {
+        sendAck(client, cmdId, false, "Campo 'enabled' invalido o ausente");
       }
     } 
     else if (strcmp(action, "setLight") == 0) {
-      if (doc.containsKey("light")) {
+      if (doc.containsKey("light") && doc["light"].is<bool>()) {
         lightEnabled = doc["light"];
         Serial.printf("[ESP32] setLight -> %s (id: %s)\n", lightEnabled ? "ON" : "OFF", cmdId);
+        sendAck(client, cmdId, true, "Tira WS2812B conmutada");
+        broadcastState(cmdId);
+      } else {
+        sendAck(client, cmdId, false, "Campo 'light' invalido o ausente");
       }
     }
     else if (strcmp(action, "getState") == 0) {
-      Serial.printf("[ESP32] getState solicitado por cliente (id: %s)\n", cmdId);
+      Serial.printf("[ESP32] getState solicitado (id: %s)\n", cmdId);
+      sendAck(client, cmdId, true, "Estado sincronizado");
+      broadcastState(cmdId);
     }
 
-    applyActuators();
-    broadcastState(cmdId);
+    applyFanPwm();
+    updateLeds();
   }
 }
 
@@ -145,14 +259,14 @@ void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType 
              void *arg, uint8_t *data, size_t len) {
   switch (type) {
     case WS_EVT_CONNECT:
-      Serial.printf("Cliente WebSocket #%u conectado desde %s\n", client->id(), client->remoteIP().toString().c_str());
+      Serial.printf("[ESP32] Cliente WebSocket #%u conectado desde %s\n", client->id(), client->remoteIP().toString().c_str());
       broadcastState();
       break;
     case WS_EVT_DISCONNECT:
-      Serial.printf("Cliente WebSocket #%u desconectado\n", client->id());
+      Serial.printf("[ESP32] Cliente WebSocket #%u desconectado\n", client->id());
       break;
     case WS_EVT_DATA:
-      handleWebSocketMessage(arg, data, len);
+      handleWebSocketMessage(client, arg, data, len);
       break;
     case WS_EVT_PONG:
     case WS_EVT_ERROR:
@@ -163,17 +277,17 @@ void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType 
 void setup() {
   Serial.begin(115200);
 
-  pinMode(PIN_HEATER, OUTPUT);
-  pinMode(PIN_COOLER, OUTPUT);
-  pinMode(PIN_GROW_LIGHT, OUTPUT);
+  // Inicializar tira de 9 LED WS2812B
+  strip.begin();
+  strip.setBrightness(120); // Brillo moderado para evitar calentamiento
+  strip.show();
 
-  // Configurar canal PWM de ventiladores
-  ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(PIN_FAN_PWM, PWM_CHANNEL);
+  // Inicializar señal PWM para los 3 ventiladores a 25 kHz
+  initFanPwm();
+  applyFanPwm();
+  updateLeds();
 
-  applyActuators();
-
-  // Inicializar red
+  // Inicializar red WiFi
   if (USE_ACCESS_POINT) {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASS);
@@ -193,7 +307,7 @@ void setup() {
     Serial.println(WiFi.localIP());
   }
 
-  // WebSocket Server
+  // Iniciar Servidor WebSocket
   ws.onEvent(onEvent);
   server.addHandler(&ws);
   server.begin();
@@ -205,15 +319,15 @@ unsigned long lastControlTick = 0;
 void loop() {
   ws.cleanupClients();
 
-  // Bucle de control y simulación térmica autónoma en el ESP32 (cada 600ms)
+  // Actualizar animación de los 9 LED continuamente sin bloqueos
+  updateLeds();
+
+  // Bucle de control térmico autónomo del ESP32 (cada 600 ms)
+  // Mantiene el control aunque React esté desconectado
   if (millis() - lastControlTick > 600) {
     lastControlTick = millis();
 
-    // 1. Lectura de sensores físicos (o evolución térmica simulada en hardware):
-    // Si tienes sensor DHT22 / BME280 / DS18B20:
-    // actualTemperature = bme.readTemperature();
-    //
-    // Si aún no tienes sensor físico conectado, el ESP32 ejecuta su propia simulación:
+    // 1. Simulación térmica física en el firmware
     float aim = powerEnabled ? targetTemperature : 20.0;
     float diff = aim - actualTemperature;
     if (abs(diff) >= 0.04) {
@@ -224,33 +338,35 @@ void loop() {
       actualTemperature = aim;
     }
 
-    // 2. Cálculo de estados térmicos y velocidad común de ventiladores (PWM):
+    // 2. Cálculo unificado de estados y velocidad común de ventiladores (PWM):
+    // Fórmula idéntica a React:
+    // - Apagado: 0%
+    // - Estable (|diff| <= 0.3): 30% (recirculación base)
+    // - Demanda (|diff| > 0.3): clamp(round(40 + |diff| * 12), 35, 100)
     if (!powerEnabled) {
       systemStatus = "apagado";
       ledMode = "red";
       fanSpeed = 0;
     } else {
-      float tempDiff = targetTemperature - actualTemperature;
+      float tempDiff = abs(targetTemperature - actualTemperature);
 
       if (tempDiff > 0.3) {
-        // Necesita calentar
-        systemStatus = "calentando";
-        ledMode = "blink-green";
-        fanSpeed = constrain(map(tempDiff * 10, 3, 50, 35, 100), 35, 100);
-      } else if (tempDiff < -0.3) {
-        // Necesita enfriar / ventilar
-        systemStatus = "enfriando";
-        ledMode = "blink-cyan";
-        fanSpeed = constrain(map(abs(tempDiff) * 10, 3, 50, 35, 100), 35, 100);
+        fanSpeed = constrain(round(40.0 + tempDiff * 12.0), 35, 100);
+        if (actualTemperature < targetTemperature - 0.3) {
+          systemStatus = "calentando";
+          ledMode = "blink-green";
+        } else {
+          systemStatus = "enfriando";
+          ledMode = "blink-cyan";
+        }
       } else {
-        // Dentro de tolerancia (estable)
         systemStatus = "estable";
         ledMode = "green";
-        fanSpeed = 30; // Velocidad de recirculación base
+        fanSpeed = 30; // Velocidad base de recirculación
       }
     }
 
-    applyActuators();
+    applyFanPwm();
     broadcastState();
   }
 }

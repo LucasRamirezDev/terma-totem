@@ -11,8 +11,8 @@ import {
   CONNECTION_MODE,
   calculateFanPwm,
   getLedPresentation,
-} from '../constants/climate';
-import { esp32 } from '../services/esp32Client';
+} from '../constants/climate.js';
+import { esp32 } from '../services/esp32Client.js';
 
 /**
  * TERMA - Hook de Control Climático
@@ -64,8 +64,10 @@ export function useClimateControl() {
     lastUpdate: null,
   });
 
-  // Seguimiento de consigna en tránsito para comandos consecutivos seguros
+  // Bloqueos de comandos en tránsito para evitar ráfagas duplicadas o contradictorias
   const pendingTargetRef = useRef(null);
+  const powerPendingRef = useRef(false);
+  const lightPendingRef = useRef(false);
   const [pendingCommand, setPendingCommand] = useState(null);
 
   // =========================================================================
@@ -81,13 +83,16 @@ export function useClimateControl() {
     const unsubscribeStatus = esp32.onStatusChange(status => {
       setEspState(status);
       if (!status.connected) {
+        // Al desconectarse, liberar bloqueos en vuelo sin alterar el último estado confirmado
         pendingTargetRef.current = null;
+        powerPendingRef.current = false;
+        lightPendingRef.current = false;
         setPendingCommand(null);
       }
     });
 
     const unsubscribeData = esp32.onMessage(data => {
-      // Telemetría oficial transmitida y ya sanitizada desde el firmware del ESP32-S3
+      // Telemetría oficial transmitida y sanitizada desde el firmware del ESP32-S3
       setConnectedState(prev => {
         const next = { ...prev, lastUpdate: Date.now() };
 
@@ -116,13 +121,9 @@ export function useClimateControl() {
         return next;
       });
 
-      // Liberar referencia en tránsito si la temperatura recibida coincide con la consigna esperada
+      // Si la temperatura objetivo confirmada coincide con la consigna en cola, liberar la referencia
       if (pendingTargetRef.current !== null && data.targetTemperature === pendingTargetRef.current) {
         pendingTargetRef.current = null;
-      }
-
-      if (esp32.getPendingCount() === 0) {
-        setPendingCommand(null);
       }
     });
 
@@ -257,7 +258,7 @@ export function useClimateControl() {
   // =========================================================================
   // CONTROLADORES DE ACCIONES DE USUARIO
   // En modo Simulación: modifican el estado local reactivo.
-  // En modo Conectado: transmiten el comando al ESP32 sin mutación optimista prematura.
+  // En modo Conectado: transmiten el comando al ESP32 con confirmación explícita ACK.
   // =========================================================================
   const increaseTemp = useCallback(() => {
     if (activeMode === CONNECTION_MODE.SIMULATION) {
@@ -271,7 +272,8 @@ export function useClimateControl() {
       if (nextTemp === baseTarget) return;
 
       pendingTargetRef.current = nextTemp;
-      setPendingCommand({ action: 'setTarget', value: nextTemp });
+      setPendingCommand(prev => ({ ...prev, target: nextTemp }));
+
       esp32.sendTarget(nextTemp)
         .then(() => {
           if (pendingTargetRef.current === nextTemp) {
@@ -279,13 +281,18 @@ export function useClimateControl() {
           }
         })
         .catch(err => {
-          console.warn('[TERMA] Error enviando consigna:', err.message);
+          console.warn('[TERMA] Error o timeout en comando setTarget:', err.message);
           if (pendingTargetRef.current === nextTemp) {
             pendingTargetRef.current = null;
           }
         })
         .finally(() => {
-          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+          setPendingCommand(prev => {
+            if (!prev) return null;
+            const next = { ...prev };
+            delete next.target;
+            return Object.keys(next).length > 0 ? next : null;
+          });
         });
     }
   }, [activeMode, simState.target, connectedState.target]);
@@ -302,7 +309,8 @@ export function useClimateControl() {
       if (nextTemp === baseTarget) return;
 
       pendingTargetRef.current = nextTemp;
-      setPendingCommand({ action: 'setTarget', value: nextTemp });
+      setPendingCommand(prev => ({ ...prev, target: nextTemp }));
+
       esp32.sendTarget(nextTemp)
         .then(() => {
           if (pendingTargetRef.current === nextTemp) {
@@ -310,13 +318,18 @@ export function useClimateControl() {
           }
         })
         .catch(err => {
-          console.warn('[TERMA] Error enviando consigna:', err.message);
+          console.warn('[TERMA] Error o timeout en comando setTarget:', err.message);
           if (pendingTargetRef.current === nextTemp) {
             pendingTargetRef.current = null;
           }
         })
         .finally(() => {
-          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+          setPendingCommand(prev => {
+            if (!prev) return null;
+            const next = { ...prev };
+            delete next.target;
+            return Object.keys(next).length > 0 ? next : null;
+          });
         });
     }
   }, [activeMode, simState.target, connectedState.target]);
@@ -324,13 +337,33 @@ export function useClimateControl() {
   const togglePower = useCallback(() => {
     if (activeMode === CONNECTION_MODE.SIMULATION) {
       setSimState(prev => ({ ...prev, power: !prev.power }));
-    } else if (activeMode === CONNECTION_MODE.CONNECTED) {
+      return;
+    }
+
+    if (activeMode === CONNECTION_MODE.CONNECTED) {
+      // Protección: Si ya existe una orden de POWER en vuelo, bloquear una segunda orden contradictoria
+      if (powerPendingRef.current) return;
+
       const nextPower = !connectedState.power;
-      setPendingCommand({ action: 'setPower', value: nextPower });
+      powerPendingRef.current = true;
+      setPendingCommand(prev => ({ ...prev, power: true }));
+
       esp32.sendPower(nextPower)
-        .catch(err => console.warn('[TERMA] Error enviando encendido:', err.message))
+        .then(() => {
+          // Confirmación positiva recibida del ESP32
+        })
+        .catch(err => {
+          console.warn('[TERMA] Error o timeout en comando setPower:', err.message);
+          // Ante fallo o timeout, el estado se mantiene en el último confirmado por el hardware
+        })
         .finally(() => {
-          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+          powerPendingRef.current = false;
+          setPendingCommand(prev => {
+            if (!prev) return null;
+            const next = { ...prev };
+            delete next.power;
+            return Object.keys(next).length > 0 ? next : null;
+          });
         });
     }
   }, [activeMode, connectedState.power]);
@@ -338,13 +371,33 @@ export function useClimateControl() {
   const toggleLight = useCallback(() => {
     if (activeMode === CONNECTION_MODE.SIMULATION) {
       setSimState(prev => ({ ...prev, light: !prev.light }));
-    } else if (activeMode === CONNECTION_MODE.CONNECTED) {
+      return;
+    }
+
+    if (activeMode === CONNECTION_MODE.CONNECTED) {
+      // Protección: Si ya existe una orden de LUZ en vuelo, bloquear una segunda orden contradictoria
+      if (lightPendingRef.current) return;
+
       const nextLight = !connectedState.light;
-      setPendingCommand({ action: 'setLight', value: nextLight });
+      lightPendingRef.current = true;
+      setPendingCommand(prev => ({ ...prev, light: true }));
+
       esp32.sendLight(nextLight)
-        .catch(err => console.warn('[TERMA] Error enviando luz auxiliar:', err.message))
+        .then(() => {
+          // Confirmación positiva recibida del ESP32
+        })
+        .catch(err => {
+          console.warn('[TERMA] Error o timeout en comando setLight:', err.message);
+          // Ante fallo o timeout, el estado se mantiene en el último confirmado por el hardware
+        })
         .finally(() => {
-          setPendingCommand(esp32.getPendingCount() > 0 ? { action: 'in_flight' } : null);
+          lightPendingRef.current = false;
+          setPendingCommand(prev => {
+            if (!prev) return null;
+            const next = { ...prev };
+            delete next.light;
+            return Object.keys(next).length > 0 ? next : null;
+          });
         });
     }
   }, [activeMode, connectedState.light]);

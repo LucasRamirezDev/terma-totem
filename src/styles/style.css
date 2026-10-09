@@ -1,4 +1,23 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+/* =========================================================
+   FUENTES TIPOGRÁFICAS LOCALES (100% OFFLINE)
+   ========================================================= */
+@font-face {
+  font-family: 'DM Sans';
+  src: url('../assets/fonts/DMSans-VariableFont_opsz,wght.ttf') format('truetype-variations'),
+       url('../assets/fonts/DMSans-VariableFont_opsz,wght.ttf') format('truetype');
+  font-weight: 100 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: url('../assets/fonts/SpaceGrotesk-VariableFont_wght.ttf') format('truetype-variations'),
+       url('../assets/fonts/SpaceGrotesk-VariableFont_wght.ttf') format('truetype');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
 
 /* =========================================================
    1. VARIABLES & RESET GENERAL

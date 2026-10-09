@@ -52,7 +52,6 @@ class MockWebSocket {
 }
 
 test('ESP32Client - Manejo de socket, comandos y aislamiento', async (t) => {
-  // Instalar MockWebSocket en entorno global
   const originalWebSocket = globalThis.WebSocket;
   globalThis.WebSocket = MockWebSocket;
 
@@ -89,57 +88,101 @@ test('ESP32Client - Manejo de socket, comandos y aislamiento', async (t) => {
   assert.equal(firstMessage.action, 'getState');
   assert.ok(firstMessage.id, 'Debe incluir un ID de comando');
 
-  // 3. Envío de comando con correlación de ACK
+  // 3. Envío de comando con correlación de ACK positivo
   const targetPromise = esp32.sendTarget(24.5);
-  assert.equal(esp32.getPendingCount(), 2); // getState + setTarget
-
-  const targetSentMsg = JSON.parse(mockWs.sentMessages[1]);
+  const targetSentMsg = JSON.parse(mockWs.sentMessages[mockWs.sentMessages.length - 1]);
   assert.equal(targetSentMsg.action, 'setTarget');
   assert.equal(targetSentMsg.target, 24.5);
   const cmdId = targetSentMsg.id;
 
-  // Simular respuesta del ESP32 con ACK correspondiente
+  // Telemetría sin ACK NO debe resolver el comando pendiente
   mockWs.simulateMessage({
     type: 'state',
     targetTemperature: 24.5,
     actualTemperature: 20.2,
-    power: true,
-    light: true,
-    fanSpeed: 88,
-    systemStatus: 'calentando',
-    ledMode: 'blink-green',
+  });
+  // El comando aún debe permanecer pendiente
+  assert.equal(esp32.pendingCommands.has(cmdId), true);
+
+  // Simular ACK explícito desde el ESP32
+  mockWs.simulateMessage({
+    type: 'ack',
     ack: cmdId,
+    success: true,
+    message: 'Consigna actualizada',
   });
 
   const resolvedData = await targetPromise;
-  assert.equal(resolvedData.targetTemperature, 24.5);
   assert.equal(resolvedData.ack, cmdId);
+  assert.equal(resolvedData.success, true);
+  assert.equal(esp32.pendingCommands.has(cmdId), false);
 
-  // 4. Protección frente a JSON corrupto
+  // 4. Confirmación negativa (rechazo de comando por el ESP32)
+  const rejectedCmdPromise = esp32.sendTarget(35.0); // Valor fuera de rango
+  const rejectedSentMsg = JSON.parse(mockWs.sentMessages[mockWs.sentMessages.length - 1]);
+  const rejectedCmdId = rejectedSentMsg.id;
+
+  mockWs.simulateMessage({
+    type: 'ack',
+    ack: rejectedCmdId,
+    success: false,
+    status: 'error',
+    error: 'Temperatura objetivo fuera de rango [15.0, 30.0]',
+  });
+
+  await assert.rejects(
+    async () => {
+      await rejectedCmdPromise;
+    },
+    { message: /Temperatura objetivo fuera de rango/ }
+  );
+
+  // 5. Manejo fuera de orden de múltiples comandos concurrentes
+  const cmdA = esp32.sendPower(true);
+  const cmdAId = JSON.parse(mockWs.sentMessages[mockWs.sentMessages.length - 1]).id;
+
+  const cmdB = esp32.sendLight(true);
+  const cmdBId = JSON.parse(mockWs.sentMessages[mockWs.sentMessages.length - 1]).id;
+
+  // Responder primero a B y luego a A
+  mockWs.simulateMessage({ type: 'ack', ack: cmdBId, success: true });
+  mockWs.simulateMessage({ type: 'ack', ack: cmdAId, success: true });
+
+  const resB = await cmdB;
+  const resA = await cmdA;
+  assert.equal(resB.ack, cmdBId);
+  assert.equal(resA.ack, cmdAId);
+
+  // 6. Timeout configurable
+  const timeoutPromise = esp32.sendCommand('testTimeout', {}, 50);
+  await assert.rejects(
+    async () => {
+      await timeoutPromise;
+    },
+    { message: /Timeout de 50ms/ }
+  );
+
+  // 7. Protección frente a JSON corrupto
   let telemetryReceived = null;
   const unsubData = esp32.onMessage(data => {
     telemetryReceived = data;
   });
 
-  // Enviar mensaje con sintaxis inválida: no debe lanzar excepción
   mockWs.simulateMessage('{invalido json');
 
-  // Enviar mensaje con valores válidos
   mockWs.simulateMessage({
     actualTemperature: 21.0,
     systemStatus: 'calentando',
   });
   assert.equal(telemetryReceived.actualTemperature, 21.0);
 
-  // 5. Desconexión y limpieza de comandos pendientes
+  // 8. Desconexión y limpieza de comandos pendientes
   const pendingPromise = esp32.sendPower(false);
   assert.equal(esp32.getPendingCount() >= 1, true);
 
-  // Simular pérdida de enlace
   mockWs.simulateClose(false);
   assert.equal(esp32.isConnected(), false);
 
-  // El comando pendiente debe rechazarse por la desconexión
   await assert.rejects(async () => {
     await pendingPromise;
   }, { message: /Conexión cerrada/ });

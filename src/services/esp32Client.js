@@ -3,7 +3,10 @@
  * 
  * Gestiona el ciclo de vida del enlace WebSocket, reconexiones controladas,
  * aislamiento de sockets obsoletos, tabla de comandos en tránsito con timeouts,
- * correlación de solicitudes/respuestas y validación estricta de telemetría.
+ * confirmaciones explícitas (ACK positivo y negativo) y validación estricta de telemetría.
+ * 
+ * REGLA ARQUITECTÓNICA: Las confirmaciones se realizan ÚNICAMENTE mediante 'ack' explícito.
+ * La telemetría no se utiliza bajo ninguna circunstancia como confirmación implícita.
  */
 
 import { DEFAULT_ESP32_IP, DEFAULT_WS_PATH, validateEsp32Telemetry } from '../constants/climate.js';
@@ -17,8 +20,9 @@ class ESP32Client {
     this.statusListeners = new Set();
     this.isManualDisconnect = false;
     this.cmdCounter = 0;
+    this.sessionId = null;
 
-    // Tabla de comandos pendientes: Map<string, { id, action, payload, timeoutTimer, resolve, reject, timestamp }>
+    // Tabla de comandos pendientes: Map<string, { id, action, payload, sessionId, timeoutTimer, resolve, reject, timestamp }>
     this.pendingCommands = new Map();
 
     // Dirección IP / Host predeterminada: 192.168.4.1 (Access Point estándar de ESP32)
@@ -86,6 +90,9 @@ class ESP32Client {
 
     this.clearTimers();
     this.cleanupSocket();
+
+    // Nueva sesión de conexión única para aislar comandos de sesiones previas
+    this.sessionId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
     const wsUrl = this.getWebSocketUrl();
     this.updateStatus('connecting', `Conectando a ${this.targetIp}...`);
@@ -255,7 +262,7 @@ class ESP32Client {
     return `cmd_${Date.now()}_${this.cmdCounter}`;
   }
 
-  sendCommand(action, payload = {}) {
+  sendCommand(action, payload = {}, timeoutMs = 3000) {
     const id = this.createCommandId();
     const message = { action, ...payload, id };
 
@@ -282,14 +289,15 @@ class ESP32Client {
     const timeoutTimer = setTimeout(() => {
       if (this.pendingCommands.has(id)) {
         this.pendingCommands.delete(id);
-        rejectPromise(new Error(`Timeout de 3s esperando confirmación de ${action} (id: ${id})`));
+        rejectPromise(new Error(`Timeout de ${timeoutMs}ms esperando confirmación de ${action} (id: ${id})`));
       }
-    }, 3000);
+    }, timeoutMs);
 
     this.pendingCommands.set(id, {
       id,
       action,
       payload,
+      sessionId: this.sessionId,
       timestamp: Date.now(),
       timeoutTimer,
       resolve: resolvePromise,
@@ -308,24 +316,24 @@ class ESP32Client {
     return promise;
   }
 
-  sendGetState() {
-    return this.sendCommand('getState');
+  sendGetState(timeoutMs = 3000) {
+    return this.sendCommand('getState', {}, timeoutMs);
   }
 
-  sendTarget(target) {
-    const p = this.sendCommand('setTarget', { target });
+  sendTarget(target, timeoutMs = 3000) {
+    const p = this.sendCommand('setTarget', { target }, timeoutMs);
     p.target = target;
     return p;
   }
 
-  sendPower(enabled) {
-    const p = this.sendCommand('setPower', { enabled });
+  sendPower(enabled, timeoutMs = 3000) {
+    const p = this.sendCommand('setPower', { enabled }, timeoutMs);
     p.enabled = enabled;
     return p;
   }
 
-  sendLight(light) {
-    const p = this.sendCommand('setLight', { light });
+  sendLight(light, timeoutMs = 3000) {
+    const p = this.sendCommand('setLight', { light }, timeoutMs);
     p.light = light;
     return p;
   }
@@ -339,40 +347,39 @@ class ESP32Client {
       return;
     }
 
-    const { valid, sanitized } = validateEsp32Telemetry(parsed);
-    if (!valid || !sanitized) return;
+    if (!parsed || typeof parsed !== 'object') return;
 
-    // 1. Correlación de comandos pendientes mediante ack explícito
-    if (sanitized.ack && this.pendingCommands.has(sanitized.ack)) {
-      const pending = this.pendingCommands.get(sanitized.ack);
+    // 1. Correlación EXCLUSIVA mediante confirmación explícita 'ack'
+    const ackId = typeof parsed.ack === 'string' ? parsed.ack.trim() : null;
+    if (ackId && this.pendingCommands.has(ackId)) {
+      const pending = this.pendingCommands.get(ackId);
+
+      // Descartar si el ACK pertenece a una sesión de conexión anterior
+      if (pending.sessionId !== this.sessionId) {
+        console.warn(`[ESP32] ACK ${ackId} ignorado por provenir de conexión anterior`);
+        this.pendingCommands.delete(ackId);
+        return;
+      }
+
       clearTimeout(pending.timeoutTimer);
-      this.pendingCommands.delete(sanitized.ack);
-      pending.resolve(sanitized);
-    } else {
-      // Correlación de respaldo por valor si el firmware no envía ack explícito
-      for (const [id, pending] of this.pendingCommands.entries()) {
-        let matches = false;
-        if (pending.action === 'setTarget' && sanitized.targetTemperature === pending.payload.target) {
-          matches = true;
-        } else if (pending.action === 'setPower' && sanitized.power === pending.payload.enabled) {
-          matches = true;
-        } else if (pending.action === 'setLight' && sanitized.light === pending.payload.light) {
-          matches = true;
-        } else if (pending.action === 'getState') {
-          matches = true;
-        }
+      this.pendingCommands.delete(ackId);
 
-        if (matches) {
-          clearTimeout(pending.timeoutTimer);
-          this.pendingCommands.delete(id);
-          pending.resolve(sanitized);
-          break;
-        }
+      // Verificación de ACK positivo vs negativo
+      const isNegative = parsed.success === false || parsed.status === 'error';
+      if (isNegative) {
+        const errorMsg = parsed.error || parsed.message || `Comando ${pending.action} rechazado por microcontrolador`;
+        pending.reject(new Error(errorMsg));
+      } else {
+        pending.resolve(parsed);
       }
     }
 
-    // 2. Notificación a los componentes con telemetría sanitizada
-    this.notifyListeners(sanitized);
+    // 2. Validación y notificación de telemetría a componentes React
+    // REGLA: Los mensajes de telemetría jamás resuelven comandos implícitamente
+    const { valid, sanitized } = validateEsp32Telemetry(parsed);
+    if (valid && sanitized) {
+      this.notifyListeners(sanitized);
+    }
   }
 
   onMessage(callback) {
