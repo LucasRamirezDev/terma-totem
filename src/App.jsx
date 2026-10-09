@@ -13,18 +13,19 @@ export function App() {
     actual,
     enabled,
     light,
-    simulation,
+    fanSpeed,
     status,
-    rpm,
     led,
     ledLabel,
+    activeMode,
+    isStale,
     espState,
     increaseTemp,
     decreaseTemp,
     togglePower,
     toggleLight,
-    setManualActual,
-    setSimulationEnabled,
+    setMode,
+    reconnect,
     setEspIp,
   } = useClimateControl();
 
@@ -38,6 +39,7 @@ export function App() {
           actual={actual}
           status={status}
           led={led}
+          isStale={isStale}
         />
 
         <Controls
@@ -51,7 +53,7 @@ export function App() {
       </section>
 
       <InfoBar
-        rpm={rpm}
+        fanSpeed={fanSpeed}
         status={status}
         led={led}
         ledLabel={ledLabel}
@@ -59,7 +61,11 @@ export function App() {
       />
 
       <SimulationBar
+        activeMode={activeMode}
+        isStale={isStale}
         espState={espState}
+        onSetMode={setMode}
+        onReconnect={reconnect}
         onSetEspIp={setEspIp}
       />
     </main>

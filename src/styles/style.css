@@ -639,6 +639,78 @@ h1 {
   font-weight: 700;
 }
 
+.esp-badge.simulation {
+  border-color: #27b9eb;
+  color: #5ed6ff;
+  background: #112832;
+}
+
+.esp-badge.connecting {
+  border-color: #e5aa1d;
+  color: #ffc43b;
+  background: #2b2413;
+}
+
+.esp-badge.disconnected {
+  border-color: #566067;
+  color: #92a4a7;
+  background: #161c1e;
+}
+
+.esp-dot.sim {
+  background: #27b9eb;
+  box-shadow: 0 0 8px #27b9eb;
+}
+
+.esp-dot.warning {
+  background: #ffc43b;
+  box-shadow: 0 0 8px #ffc43b;
+}
+
+.esp-dot.offline {
+  background: #f24c4c;
+}
+
+.esp-modal-divider {
+  height: 1px;
+  background: #25393f;
+  margin: 6px 0;
+}
+
+.esp-modal-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mode-btn {
+  background: #162428;
+  border: 1px solid #2e474f;
+  color: #d1e7e9;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .2s;
+  text-align: center;
+}
+
+.mode-btn:hover {
+  background: #22373d;
+  border-color: #18d7a9;
+  color: #fff;
+}
+
+.mode-btn.sim {
+  border-color: #27b9eb60;
+}
+
+.mode-btn.sim:hover {
+  border-color: #27b9eb;
+  color: #5ed6ff;
+}
+
 /* =========================================================
    8. RESPONSIVE: MOBILE PORTRAIT (PANTALLA VERTICAL)
    ========================================================= */

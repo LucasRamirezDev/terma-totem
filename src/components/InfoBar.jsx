@@ -1,13 +1,16 @@
 import React from 'react';
 import { Wind, Activity, Lightbulb } from 'lucide-react';
 
-export function InfoBar({ rpm, status, led, ledLabel, light }) {
+export function InfoBar({ fanSpeed, rpm, status, led, ledLabel, light }) {
+  // Porcentaje PWM de ciclo de trabajo ordenado a los ventiladores
+  const pwmPercentage = typeof fanSpeed === 'number' ? fanSpeed : (typeof rpm === 'number' ? rpm : 0);
+
   return (
     <section className="info" aria-label="Métricas del sistema">
-      <div className="infoitem">
+      <div className="infoitem" title="Ciclo de trabajo PWM de ventiladores (0 a 100%)">
         <Wind size={17} />
         <span>VENTILADORES</span>
-        <strong>{rpm}%</strong>
+        <strong>{pwmPercentage}%</strong>
       </div>
 
       <div className="infoitem">
