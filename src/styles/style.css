@@ -42,9 +42,13 @@ body {
    ========================================================= */
 .page {
   min-height: 100vh;
+  min-height: 100dvh;
   max-width: 1220px;
   margin: auto;
-  padding: clamp(16px, 4vw, 44px) 20px;
+  padding-top: max(clamp(16px, 4vw, 44px), env(safe-area-inset-top, 0px));
+  padding-bottom: max(clamp(16px, 4vw, 44px), env(safe-area-inset-bottom, 0px));
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -902,8 +906,12 @@ h1 {
    ========================================================= */
 @media (orientation: landscape) and (max-height: 560px) {
   .page {
-    padding: 8px 16px;
+    padding-top: max(8px, env(safe-area-inset-top, 0px));
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
     min-height: 100vh;
+    min-height: 100dvh;
     justify-content: center;
   }
 

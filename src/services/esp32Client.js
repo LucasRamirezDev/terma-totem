@@ -219,12 +219,14 @@ class ESP32Client {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
+    this.updateStatus('connecting', `Buscando ESP32 en ${this.targetIp}...`);
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.isManualDisconnect) {
         this.connect();
       }
-    }, 3500);
+    }, 2500);
   }
 
   updateStatus(state, message) {

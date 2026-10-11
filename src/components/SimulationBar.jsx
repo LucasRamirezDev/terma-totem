@@ -35,13 +35,13 @@ export function SimulationBar({
         return {
           className: 'connected',
           dotClass: 'online',
-          text: `ESP32-S3 Conectado (${espState.ip})`,
+          text: `ESP32 Conectado (${espState.ip})`,
         };
       case CONNECTION_MODE.CONNECTING:
         return {
           className: 'connecting',
           dotClass: 'warning',
-          text: `Conectando a ${espState.ip}...`,
+          text: espState.message || `Buscando ESP32 (${espState.ip})...`,
         };
       case CONNECTION_MODE.SIMULATION:
         return {
@@ -54,7 +54,7 @@ export function SimulationBar({
         return {
           className: 'disconnected',
           dotClass: 'offline',
-          text: isStale ? 'ESP32 Desconectado (Último estado)' : 'ESP32 Desconectado',
+          text: isStale ? 'ESP32 Desconectado (Último estado)' : `Reintentando enlace (${espState.ip})...`,
         };
     }
   };
@@ -121,6 +121,15 @@ export function SimulationBar({
                   Activar Modo Simulación (Offline)
                 </button>
               )}
+            </div>
+
+            <div className="esp-modal-divider" />
+
+            <div style={{ fontSize: '11px', color: '#8ca6a5', lineHeight: '1.4', marginTop: '6px' }}>
+              <strong style={{ color: '#2ce2b1' }}>Verificación Wi-Fi:</strong>
+              <div style={{ marginTop: '3px' }}>1. Conectá el celular a <strong>TERMA-TOTEM</strong>.</div>
+              <div>2. Si Android avisa "Sin internet", tocá <em>"Mantener conexión"</em>.</div>
+              <div>3. Si no conecta, desactivá temporalmente los Datos Móviles (4G/5G).</div>
             </div>
           </div>
         )}

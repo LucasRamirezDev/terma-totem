@@ -42,3 +42,10 @@ desktop.ini
 # Caché de Vite y pruebas
 .vite/
 coverage/
+
+# Android / Gradle
+android/local.properties
+android/.gradle/
+android/app/build/
+android/build/
+*.apk
