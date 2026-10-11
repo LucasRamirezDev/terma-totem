@@ -4,13 +4,39 @@
 
 ## 1. Descripción General y Propósito del Sistema
 
-TERMA es una plataforma integral de control climático para invernaderos diseñada para operar de forma autónoma, robusta y **100% offline**. El sistema combina una interfaz táctil de alta respuesta (HMI) desarrollada con **React 19**, **Vite** y **Capacitor 8** —empaquetada como aplicación **Android APK nativa**— con un controlador embebido basado en microcontroladores **ESP32 / ESP32-S3**.
+TERMA es una plataforma de control climático para invernaderos diseñada para operar de forma autónoma, robusta y **100% offline**. El sistema combina una interfaz táctil de alta respuesta (HMI) desarrollada con **React 19**, **Vite** y **Capacitor 8** —empaquetada como aplicación **Android APK nativa**— con un controlador embebido basado en microcontroladores **ESP32 / ESP32-S3**.
 
 La comunicación entre el terminal táctil y la unidad de control se resuelve mediante una topología de transporte dual en tiempo real: **WebSocket sobre red Wi-Fi local** y **Bluetooth Low Energy (BLE)** mediante la pila NimBLE, garantizando supervisión y comando inmediato sin requerir infraestructura externa de servidores ni conectividad a Internet.
 
 ---
 
-## 2. Arquitectura del Sistema y Separación de Responsabilidades
+## 2. Estado del Desarrollo y Ecosistema Global TERMA
+
+### 2.1 TERMA: Prototipo Funcional de Campo
+Es importante destacar que este desarrollo corresponde a un **prototipo funcional de validación experimental y operativa en terreno**, y **no a un producto comercial final**. 
+
+Su objetivo primordial es comprobar la viabilidad técnica, ergonomía de comando y robustez de comunicación gobernando directamente los periféricos físicos reales del módulo:
+* Gobernanza de actuadores de potencia (etapa PWM de ventilación a 25 kHz y conmutación de luminarias).
+* Señalización óptica perimetral en tiempo real mediante bus WS2812B.
+* Enlace de control local inmediato (Wi-Fi WebSocket y BLE punto a punto) en condiciones reales de campo sin acceso a redes externas.
+
+### 2.2 TERMA Central Interface: Maqueta Conceptual del Sistema Automatizado Integral
+Como complemento y visión a escala global del ecosistema, el proyecto hermano **TERMA Interface** constituye una **maqueta interactiva de alta fidelidad (prototipo conceptual no funcional)**. Dicha aplicación proyecta cómo se visualizaría y operaría una estación central de control automatizado para la totalidad de una instalación agrícola equipada con múltiples módulos geotérmicos y colectores solares térmicos.
+
+Entre las capacidades modeladas conceptualmente en dicha interfaz destacan:
+* **Flujo Térmico en Cascada:** Representación visual del intercambio de energía secuencial: aire exterior captado $\rightarrow$ preacondicionamiento en conductos geotérmicos a 2.5 m de profundidad en el subsuelo $\rightarrow$ transferencia en intercambiadores agua-aire $\rightarrow$ inyección al ambiente de cultivo.
+* **Módulo de Geotermia Profunda:** Monitoreo del aprovechamiento de la inercia térmica constante de la tierra mediante pozos canadienses/subterráneos y cálculo de saltos térmicos ($\Delta T$).
+* **Circuito Solar Térmico e Hidrónico:** Telemetría de termotanques solares, balance entre ganancia solar pasiva (0W de consumo) y resistencia eléctrica auxiliar modulada para períodos nocturnos o de baja insolación.
+* **Control Proporcional Multivariable:** Regulación independiente de caudales de aireación forzada (`fan`), bombas de recirculación de fluidos caloportadores (`pump`) y aportes de calefacción (`heater`).
+* **Ciclos de Vida del Sistema y Diagnóstico:** Secuencias completas de inicialización de hardware (*Cold Boot*), arranque con comprobación de periféricos, modo mantenimiento con purgado forzado de bombas y rutinas de apagado seguro.
+* **Ergonomía de Operación Contínua:** Modo Standby con salvapantallas tras inactividad (con inmunidad contra toques accidentales al despertar), soporte para bloqueo de pantalla (*Wake Lock*) en terminales fijos y adaptación automática de tema claro/oscuro según reloj solar diurno/nocturno.
+
+> 🌐 **Acceso a la Maqueta Conceptual Desplegada:**  
+> [TERMA - INVERNADERO INTELIGENTE](https://terma-taupe.vercel.app)
+
+---
+
+## 3. Arquitectura del Sistema y Separación de Responsabilidades
 
 Para asegurar la integridad del proceso físico y evitar inconsistencias o cálculos concurrentes redundantes, TERMA establece una partición estricta entre la capa de presentación (HMI) y el controlador de tiempo real (Firmware ESP32-S3):
 
@@ -25,7 +51,7 @@ Para asegurar la integridad del proceso físico y evitar inconsistencias o cálc
 
 ---
 
-## 3. Ergonomía y Diseño de la Interfaz Táctil (HMI)
+## 4. Ergonomía y Diseño de la Interfaz Táctil (HMI)
 
 ![INTERFAZ-TERMA](./public/interfaz.png)
 
@@ -46,9 +72,9 @@ El diseño de la interfaz de usuario está concebido específicamente para termi
 
 ---
 
-## 4. Topología y Protocolos de Comunicación
+## 5. Topología y Protocolos de Comunicación
 
-### 4.1 Canal Wi-Fi: WebSocket Concurrente (`ws://192.168.4.1/ws`)
+### 5.1 Canal Wi-Fi: WebSocket Concurrente (`ws://192.168.4.1/ws`)
 * **Red Inalámbrica Propia:** El microcontrolador ESP32-S3 emite un punto de acceso (Access Point) bajo el SSID `TERMA-TOTEM` con dirección IP fija `192.168.4.1`.
 * **Canal Bidireccional:** Comunicación full-duplex vía WebSocket en el endpoint `ws://192.168.4.1/ws`.
 * **Tráfico Local en Red Aislada (Cleartext):** Configurado a través de directivas de seguridad Android (`network-security-config`) y esquema HTTP en Capacitor para habilitar tráfico local sin requerir certificados de internet.
@@ -57,7 +83,7 @@ El diseño de la interfaz de usuario está concebido específicamente para termi
 
 ---
 
-### 4.2 Canal Bluetooth Low Energy: NimBLE 2.x
+### 5.2 Canal Bluetooth Low Energy: NimBLE 2.x
 Diseñado para la supervisión directa en campo en proximidad física al tótem, sin necesidad de vincularse a una red Wi-Fi:
 
 #### Parámetros del Servicio GATT
@@ -85,7 +111,7 @@ Por diseño y consideraciones de seguridad operativa:
 
 ---
 
-## 5. Especificación del Protocolo de Mensajería JSON
+## 6. Especificación del Protocolo de Mensajería JSON
 
 Ambos canales de transporte (WebSocket y BLE) emplean el mismo esquema de serialización JSON con correlación de identificadores:
 
@@ -109,16 +135,16 @@ Ambos canales de transporte (WebSocket y BLE) emplean el mismo esquema de serial
 
 ---
 
-## 6. Subsistemas Físicos Gobernados
+## 7. Subsistemas Físicos Gobernados
 
-### 6.1 Etapa de Ventilación de 12V (Modulación PWM a 25 kHz)
+### 7.1 Etapa de Ventilación de 12V (Modulación PWM a 25 kHz)
 * Conexión en paralelo de tres ventiladores de 12V comandados por canal PWM generado por el periférico LEDC del ESP32 a una frecuencia audible imperceptible de **25 kHz**.
 * **Estado Apagado:** Ciclo de trabajo al `0%`.
 * **Régimen Estable (En Confort):** `30%` constante de recirculación de flujo laminar dentro del invernadero.
 * **Régimen Activo (Calentando / Enfriando):** Modulación continua proporcional al gradiente térmico entre `35%` y `100%`:  
   $$\text{fanSpeed} = \text{clamp}(40 + |\Delta T| \times 12,\, 35,\, 100)$$
 
-### 6.2 Señalización Óptica de Estado (LED RGB WS2812B)
+### 7.2 Señalización Óptica de Estado (LED RGB WS2812B)
 Tira direccionable programada para retroalimentación visual perimetral de acuerdo al estado térmico del recinto:
 * **Sistema en Espera / Apagado:** Rojo continuo (`red`).
 * **Demanda de Calefacción:** Verde intermitente (`blink-green`).
@@ -128,7 +154,7 @@ Tira direccionable programada para retroalimentación visual perimetral de acuer
 
 ---
 
-## 7. Estructura del Repositorio
+## 8. Estructura del Repositorio
 
 ```text
 TERMA-totem/
@@ -165,7 +191,7 @@ TERMA-totem/
 
 ---
 
-## 8. Flujo de Compilación y Verificación
+## 9. Flujo de Compilación y Verificación
 
 ```bash
 # 1. Ejecución de la suite completa de pruebas unitarias
