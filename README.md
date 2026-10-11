@@ -1,12 +1,12 @@
 # TERMA · Tótem de Control Climático para Invernaderos
 
-Interfaz de control climático táctil e interactiva desarrollada con **React 19** y **Vite**, preparada para gobernar microcontroladores **ESP32 / ESP32-S3** mediante **WebSocket** en tiempo real.
+Interfaz de control climático táctil e interactiva desarrollada con **React 19**, **Vite** y **Capacitor 8**, empaquetada como aplicación **Android APK nativa** y lista para gobernar microcontroladores **ESP32 / ESP32-S3** mediante **WebSocket (Wi-Fi)** y **Bluetooth Low Energy (BLE)** en tiempo real, operando **100% offline sin necesidad de conexión a Internet**.
 
 ---
 
 ## 🏛️ Arquitectura y Separación de Responsabilidades
 
-El sistema divide estrictamente el rol del frontend web y del microcontrolador para evitar que dos controladores calculen simultáneamente el mismo estado físico:
+El sistema divide estrictamente el rol del frontend web/móvil y del microcontrolador para evitar que dos controladores calculen simultáneamente el mismo estado físico:
 
 | Responsabilidad | Modo Simulación (Offline) | Modo Conectado (ESP32-S3) |
 | :--- | :--- | :--- |
@@ -19,163 +19,165 @@ El sistema divide estrictamente el rol del frontend web y del microcontrolador p
 
 ---
 
-## 📁 Estructura del Código
+## 📱 Interfaz de Usuario: Sin Header y con Selector Integrado
+
+Para optimizar al máximo el espacio vertical en pantallas de dispositivos móviles Android (tanto en orientación vertical como horizontal):
+
+1. **Eliminación del Header Superior:**
+   - Se removió el encabezado superior `<Header />` y el contenedor `.topline`.
+   - El dashboard principal (`.housing`) se monta de forma inmediata aprovechando todo el alto disponible de la pantalla.
+   - Se respetan con precisión las áreas seguras (`safe-area-inset-top`, `safe-area-inset-bottom`, `safe-area-inset-left`, `safe-area-inset-right`) para prevenir solapamientos con la barra de estado o notch del dispositivo móvil.
+2. **Selector de Protocolo Wi-Fi / Bluetooth LE Integrado:**
+   - Ubicado discretamente en el pie del dashboard (`SimulationBar.jsx`), manteniendo la coherencia estética industrial oscura.
+   - **Izquierda:** Botones selectores **Wi-Fi** y **Bluetooth (BLE)**.
+   - **Derecha:** Botón interactivo de estado de enlace y acceso al modal de configuración / modo simulación.
+
+---
+
+## 📁 Estructura del Proyecto
 
 ```text
 TERMA-totem/
-├── index.html                   # Punto de entrada HTML (monta /src/main.jsx)
-├── README.md                    # Documentación arquitectónica y de protocolo
-├── esp32/
-│   └── terma_esp32_example.ino # Firmware de referencia para ESP32-S3 con AsyncWebSocket
+├── TERMA-debug.apk              # APK Android compilada e instalable en dispositivos
+├── build-apk.ps1                # Script automatizado de compilación de APK con JDK 21 y Android SDK
+├── capacitor.config.json        # Configuración de Capacitor 8 (cleartext, HTTP scheme, Splash Screen)
+├── android/                     # Proyecto nativo Android generado y sincronizado por Capacitor
+│   └── app/src/main/
+│       ├── AndroidManifest.xml  # Permisos INTERNET, Wi-Fi, Bluetooth LE y rotación 'unspecified'
+│       ├── java/.../MainActivity.java # Flags FLAG_KEEP_SCREEN_ON y bindProcessToNetwork Wi-Fi
+│       └── res/                 # Splash screens adaptados con isotipo TERMA en todas las densidades
 ├── src/
 │   ├── main.jsx                 # Bootstrap de React (createRoot)
-│   ├── App.jsx                  # Coordinador de componentes visuales y estados
+│   ├── App.jsx                  # Montaje directo del dashboard sin header superior
 │   ├── components/
-│   │   ├── Header.jsx           # Barra superior con branding y estado
 │   │   ├── Screen.jsx           # Pantalla digital (lectura, marcas 15°-20°-30°, barra y vista QR)
-│   │   ├── Controls.jsx         # Botonera física táctil (SUBIR, BAJAR, POWER, LUZ)
+│   │   ├── Controls.jsx         # Botonera táctil (SUBIR, BAJAR, POWER, LUZ)
 │   │   ├── InfoBar.jsx          # Panel de métricas (% PWM ventiladores, estado, LED, luz)
-│   │   └── SimulationBar.jsx    # Footer con selector de modo (Simulación / Hardware) y badge de enlace
+│   │   └── SimulationBar.jsx    # Footer con selector de protocolo (Wi-Fi/BLE) y badge de enlace
 │   ├── constants/
-│   │   └── climate.js           # Constantes térmicas, fórmulas PWM, marcas de escala y modos
+│   │   └── climate.js           # Constantes térmicas, fórmulas PWM, marcas de escala y UUIDs BLE
 │   ├── hooks/
-│   │   └── useClimateControl.js # Hook principal con separación de simulación y estado de hardware
+│   │   └── useClimateControl.js # Hook con despacho unificado a WebSocket y Bluetooth LE
 │   ├── services/
-│   │   └── esp32Client.js       # Cliente WebSocket con timeouts, reconexión y etiquetado de comandos
+│   │   ├── esp32Client.js       # Cliente WebSocket con timeouts, reconexión y correlación ACK
+│   │   └── esp32BleClient.js    # Cliente BLE con wire-framing (chunks <= 20 bytes, delimitador \n)
 │   └── styles/
-│       └── style.css            # Estilos CSS responsive (desktop, landscape móvil y portrait)
+│       └── style.css            # Estilos CSS responsive optimizados (portrait y landscape sin header)
+└── tests/
+    ├── climate.test.js          # Pruebas unitarias de física térmica, PWM y validación
+    ├── esp32Client.test.js      # Pruebas unitarias del cliente WebSocket y aislamiento
+    └── esp32BleClient.test.js   # Pruebas unitarias del cliente BLE (framing, chunks, \n y ACK)
 ```
 
 ---
 
-## 🔌 Protocolo WebSocket Bidireccional (`/ws`)
+## 📡 Protocolo 1: Wi-Fi WebSocket (`ws://192.168.4.1/ws`)
 
-### 1. Dirección y Configuración
-* **Dirección predeterminada:** `ws://192.168.4.1/ws` (Access Point por defecto de ESP32).
-* **Configuración personalizada:** Editable directamente desde la interfaz y persistida en `localStorage`.
-* **Preparación para Capacitor:** No deriva la IP de `window.location.host` para evitar enlaces erróneos a `localhost` dentro de un WebView de Android.
+* **SSID del ESP32:** `TERMA-TOTEM`
+* **IP por defecto:** `192.168.4.1`
+* **Endpoint:** `ws://192.168.4.1/ws`
+* **Tráfico Cleartext:** Habilitado mediante `network-security-config` y `androidScheme: "http"` en Capacitor para evitar restricciones de contenido mixto.
+* **Red sin Internet:** `MainActivity.java` enlaza el socket al Wi-Fi con `ConnectivityManager.bindProcessToNetwork` para que Android no derive el tráfico hacia datos móviles al detectar que el ESP32 no tiene salida a Internet.
+* **Concurrencia:** Admite **múltiples clientes simultáneos** conectados en paralelo a la red del ESP32. Todos los dispositivos reciben las actualizaciones de telemetría y pueden comandar el sistema en tiempo real.
 
-### 2. Comandos desde React hacia el ESP32
+---
 
-Todos los comandos incluyen un identificador correlativo (`id`) para rastrear respuestas y acuses de recibo:
+## 🔵 Protocolo 2: Bluetooth Low Energy (BLE ESP32-S3 NimBLE 2.x)
 
-#### A. Sincronización Inicial de Estado
-Enviado automáticamente por React al abrir el canal WebSocket:
+### 1. Parámetros del Servicio GATT
+* **Device advertised name:** `TERMA-CONTROL`
+* **GATT Service UUID:** `8d7a0001-31d5-4db4-a9d7-0e3c4b1a7001`
+* **RX Characteristic (Android → ESP32):** `8d7a0002-31d5-4db4-a9d7-0e3c4b1a7001` (WRITE con respuesta)
+* **TX Characteristic (ESP32 → Android):** `8d7a0003-31d5-4db4-a9d7-0e3c4b1a7001` (NOTIFY y READ)
+
+### 2. Wire Framing y Fragmentación
+* **Formato:** Objetos JSON codificados en UTF-8 delimitados por un byte de nueva línea `0x0A` (`\n`).
+* **Transmisión (Android → ESP32):**
+  - Cada mensaje JSON se envía con el delimitador `\n`.
+  - Se valida que la carga útil no supere los 511 bytes.
+  - La secuencia de bytes se divide en fragmentos secuenciales de **no más de 20 bytes**.
+  - Cada fragmento se envía mediante **write con respuesta**, esperando la finalización de cada uno antes de transmitir el siguiente.
+  - Una cola secuencial interna (`writeQueue`) impide intercalar fragmentos de comandos simultáneos.
+* **Recepción (ESP32 → Android):**
+  - La aplicación se suscribe a notificaciones en la característica TX.
+  - Los fragmentos recibidos (<= 20 bytes) se acumulan de forma continua en un búfer receptor de bytes crudos (`rxBuffer`).
+  - Únicamente se extrae y parsea un objeto JSON completo al detectar el delimitador `0x0A` (`\n`).
+  - Se descarta explícitamente el mensaje de bienvenida inicial `"TERMA ready\n"` emitido por el firmware antes de la primera sincronización.
+  - Las notificaciones se despachan según su contenido: respuestas `ack` (correlacionadas con el `id` de la solicitud) o marcos de telemetría `state`.
+* **Sincronización:** Inmediatamente tras descubrir el servicio GATT y suscribirse exitosamente a las notificaciones TX, la aplicación emite `getState` para sincronizar el estado completo.
+
+### 3. Modelo de Conexión Exclusiva (Punto a Punto 1 a 1)
+* A diferencia del canal Wi-Fi, la conexión Bluetooth Low Energy opera de forma **exclusiva 1 a 1**:
+  - Al conectarse el primer teléfono móvil, el chip Bluetooth detiene automáticamente el anuncio (*Advertising*) para asegurar el canal y garantizar que los búferes de fragmentación no se mezclen.
+  - Mientras un dispositivo esté enlazado, otros celulares no verán al ESP32 disponible.
+  - Tan pronto como el celular activo se desconecta, el ESP32 reanuda el anuncio de inmediato (`startAdvertising()`) para permitir que otro usuario tome el control.
+
+### 4. Optimizaciones de Latencia
+* **Connection Priority HIGH:** La app solicita a Android un intervalo de conexión de alta velocidad (`7.5 ms a 15 ms`) mediante `BleClient.requestConnectionPriority(..., ConnectionPriority.CONNECTION_PRIORITY_HIGH)`.
+* **Bombeo rápido de notificaciones:** En el firmware ESP32 se redujo el retardo entre fragmentos a **8 ms**, logrando que la telemetría completa viaje en menos de 75 ms.
+* **Advertising sin desbordamiento:** Para no exceder el límite de 31 bytes del estándar BLE Legacy y evitar que Android lo muestre como *Unknown*, el nombre `TERMA-CONTROL` se transmite en el paquete primario y el Service UUID en el paquete de *Scan Response*.
+
+---
+
+## 🔄 Comandos Comunes (WebSocket y BLE)
+
+Ambos canales de comunicación comparten la misma sintaxis JSON y el mismo esquema de correlación de respuestas:
+
+### 1. Comandos hacia el ESP32
 ```json
-{
-  "action": "getState",
-  "id": "cmd_1712678900_1"
-}
+{"action":"setPower","enabled":true,"id":"cmd_1712678900_1"}
+{"action":"setTarget","target":23.5,"id":"cmd_1712678900_2"}
+{"action":"setLight","light":false,"id":"cmd_1712678900_3"}
+{"action":"getState","id":"cmd_1712678900_4"}
 ```
 
-#### B. Ajuste de Temperatura Objetivo (Consigna)
+### 2. Respuestas y Acuses de Recibo (ACK)
 ```json
-{
-  "action": "setTarget",
-  "target": 18.5,
-  "id": "cmd_1712678900_2"
-}
+{"type":"ack","ack":"cmd_1712678900_2","success":true,"status":"ok","message":"Estado actualizado"}
 ```
 
-#### C. Encendido / Apagado General
+### 3. Telemetría y Estado
 ```json
-{
-  "action": "setPower",
-  "enabled": true,
-  "id": "cmd_1712678900_3"
-}
-```
-
-#### D. Encendido / Apagado de Luz Auxiliar
-```json
-{
-  "action": "setLight",
-  "light": false,
-  "id": "cmd_1712678900_4"
-}
+{"type":"state","targetTemperature":18.5,"actualTemperature":19.4,"power":true,"light":false,"fanSpeed":45,"systemStatus":"enfriando","ledMode":"blink-cyan"}
 ```
 
 ---
 
-### 3. Telemetría y Acuse desde el ESP32 hacia React
+## 🌀 Ventiladores de 12V y PWM
 
-El ESP32 emite el estado completo de manera periódica (cada 600 ms) y de forma inmediata ante cualquier comando:
-
-```json
-{
-  "type": "state",
-  "targetTemperature": 18.5,
-  "actualTemperature": 19.4,
-  "power": true,
-  "light": false,
-  "fanSpeed": 45,
-  "systemStatus": "enfriando",
-  "ledMode": "blink-cyan",
-  "ack": "cmd_1712678900_2"
-}
-```
-
-* **`actualTemperature`**: Lectura del sensor físico o simulación en firmware (°C).
-* **`targetTemperature`**: Temperatura consigna (°C).
-* **`power`**: `true` (encendido) | `false` (apagado).
-* **`light`**: `true` (encendida) | `false` (apagada).
-* **`fanSpeed`**: Ciclo de trabajo PWM común (0 a 100%) ordenado a los 3 ventiladores.
-* **`systemStatus`**: `"apagado"` | `"calentando"` | `"enfriando"` | `"estable"`.
-* **`ledMode`**: `"red"` (rojo fijo) | `"blink-green"` (verde intermitente) | `"blink-cyan"` (celeste intermitente) | `"green"` (verde fijo).
-* **`ack`**: Identificador del comando recibido que motivó la actualización (opcional).
-
----
-
-## 🌀 Ventiladores de 12V (Control Común)
-
-El sistema opera con **tres ventiladores de 12V en paralelo** comandados por una señal PWM común a **25 kHz** generada por el periférico LEDC del ESP32:
+* Tres ventiladores de 12V en paralelo comandados por señal PWM común a **25 kHz** generada por el periférico LEDC del ESP32.
 * **Apagado:** `0%` PWM.
 * **Estable:** `30%` PWM (recirculación de aire base dentro del invernadero).
-* **Calentando / Enfriando:** Modulación dinámica entre `35%` y `100%` en función de la brecha térmica:  
+* **Calentando / Enfriando:** Modulación dinámica entre `35%` y `100%`:  
   `fanSpeed = clamp(40 + abs(diff) * 12, 35, 100)`
-* En la interfaz se muestra el porcentaje de potencia PWM (`VENTILADORES: XX%`), dejando abierta la futura incorporación de lectura tacométrica para RPM reales.
 
 ---
 
-## 💡 Tira de 9 LED RGB WS2812B y Botón LUZ
+## 💡 Iluminación LED RGB WS2812B
 
-El prototipo utiliza una única tira de nueve LED direccionables WS2812B:
-* **Botón LUZ:** Activa o desactiva la iluminación de la tira (`setLight: true/false`).
-* **Comportamiento cuando la luz está ENCENDIDA:** Los 9 LED reproducen físicamente el estado del sistema:
+* Botón **LUZ** activa/desactiva la tira direccionable:
   * **Apagado:** Rojo fijo (`red`).
   * **Calentando:** Verde intermitente (`blink-green`).
   * **Estable:** Verde fijo (`green`).
   * **Enfriando:** Celeste intermitente (`blink-cyan`).
-* **Comportamiento cuando la luz está APAGADA:**
-  * Los 9 LED permanecen apagados (negro/0).
-  * Los ventiladores continúan operando normalmente con su señal PWM.
-  * El control térmico y la simulación continúan activos.
-  * El indicador en pantalla continúa informando el estado del sistema.
+* Si la luz está apagada, la tira permanece apagada mientras los controles climáticos y ventiladores continúan operando con normalidad.
 
 ---
 
-## 🛠️ Comandos de Desarrollo
+## 🛠️ Comandos de Compilación y Ejecución
 
 ```bash
-# Servidor de desarrollo local con Vite
-npm run dev
-
-# Suite de pruebas automatizadas (Node test runner)
+# Ejecutar suite de pruebas unitarias (Node.js test runner)
 npm test
 
-# Compilar para producción (carpeta dist/)
+# Compilar frontend web para producción
 npm run build
 
-# Previsualizar build de producción
-npm run preview
+# Sincronizar recursos web y plugins con el proyecto Android
+npx cap sync
+
+# Compilar la aplicación Android APK con Gradle
+npm run build:apk
 ```
 
----
-
-## 📱 Preparación para Android y Capacitor (Próxima Etapa)
-
-* La aplicación no depende de ningún servicio externo obligatorio para su lógica ni utiliza `window.location.host` para conectarse al microcontrolador.
-* Para operar en modo 100% offline dentro de una APK de Android sin acceso a internet:
-  * Empaquetar localmente las fuentes tipográficas (`DM Sans` y `Space Grotesk`) en lugar de depender de Google Fonts online.
-  * Todos los assets (`icono-terma.png`, `icono-qr.png`, `qr.svg`) residen localmente en `/public`.
-
+El script `build:apk` genera el archivo `TERMA-debug.apk` directamente en la raíz del proyecto para su instalación manual inmediata en cualquier teléfono o tablet Android.

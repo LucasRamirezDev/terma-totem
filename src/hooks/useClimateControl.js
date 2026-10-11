@@ -13,6 +13,7 @@ import {
   getLedPresentation,
 } from '../constants/climate.js';
 import { esp32 } from '../services/esp32Client.js';
+import { esp32Ble } from '../services/esp32BleClient.js';
 
 /**
  * TERMA - Hook de Control Climático
@@ -29,6 +30,15 @@ export function useClimateControl() {
       return localStorage.getItem('TERMA_op_mode') || 'auto';
     } catch {
       return 'auto';
+    }
+  });
+
+  // Protocolo de enlace: 'wifi' (por defecto) o 'bluetooth'
+  const [protocol, setProtocolState] = useState(() => {
+    try {
+      return localStorage.getItem('TERMA_protocol') || 'wifi';
+    } catch {
+      return 'wifi';
     }
   });
 
@@ -71,27 +81,10 @@ export function useClimateControl() {
   const [pendingCommand, setPendingCommand] = useState(null);
 
   // =========================================================================
-  // CONEXIÓN Y SUSCRIPCIÓN A TELEMETRÍA DEL ESP32
+  // CONEXIÓN Y SUSCRIPCIÓN A TELEMETRÍA DEL ESP32 (WIFI O BLE)
   // =========================================================================
   useEffect(() => {
-    if (userMode !== 'simulation') {
-      esp32.connect();
-    } else {
-      esp32.disconnect();
-    }
-
-    const unsubscribeStatus = esp32.onStatusChange(status => {
-      setEspState(status);
-      if (!status.connected) {
-        // Al desconectarse, liberar bloqueos en vuelo sin alterar el último estado confirmado
-        pendingTargetRef.current = null;
-        powerPendingRef.current = false;
-        lightPendingRef.current = false;
-        setPendingCommand(null);
-      }
-    });
-
-    const unsubscribeData = esp32.onMessage(data => {
+    const handleTelemetry = (data) => {
       // Telemetría oficial transmitida y sanitizada desde el firmware del ESP32-S3
       setConnectedState(prev => {
         const next = { ...prev, lastUpdate: Date.now() };
@@ -125,13 +118,47 @@ export function useClimateControl() {
       if (pendingTargetRef.current !== null && data.targetTemperature === pendingTargetRef.current) {
         pendingTargetRef.current = null;
       }
-    });
-
-    return () => {
-      unsubscribeStatus();
-      unsubscribeData();
     };
-  }, [userMode]);
+
+    const handleStatus = (status) => {
+      setEspState(status);
+      if (!status.connected) {
+        // Al desconectarse, liberar bloqueos en vuelo sin alterar el último estado confirmado
+        pendingTargetRef.current = null;
+        powerPendingRef.current = false;
+        lightPendingRef.current = false;
+        setPendingCommand(null);
+      }
+    };
+
+    if (userMode === 'simulation') {
+      esp32.disconnect();
+      esp32Ble.disconnect();
+      return;
+    }
+
+    if (protocol === 'bluetooth') {
+      esp32.disconnect();
+      const unsubStatus = esp32Ble.onStatusChange(handleStatus);
+      const unsubData = esp32Ble.onMessage(handleTelemetry);
+      esp32Ble.connect();
+
+      return () => {
+        unsubStatus();
+        unsubData();
+      };
+    } else {
+      esp32Ble.disconnect();
+      const unsubStatus = esp32.onStatusChange(handleStatus);
+      const unsubData = esp32.onMessage(handleTelemetry);
+      esp32.connect();
+
+      return () => {
+        unsubStatus();
+        unsubData();
+      };
+    }
+  }, [userMode, protocol]);
 
   // =========================================================================
   // DETERMINACIÓN DEL MODO DE OPERACIÓN ACTIVO
@@ -141,13 +168,13 @@ export function useClimateControl() {
       return CONNECTION_MODE.SIMULATION;
     }
     if (espState.connected) {
-      return CONNECTION_MODE.CONNECTED;
+      return protocol === 'bluetooth' ? CONNECTION_MODE.BLUETOOTH : CONNECTION_MODE.CONNECTED;
     }
     if (espState.state === 'connecting') {
       return CONNECTION_MODE.CONNECTING;
     }
     return CONNECTION_MODE.DISCONNECTED;
-  }, [userMode, espState.connected, espState.state]);
+  }, [userMode, protocol, espState.connected, espState.state]);
 
   // =========================================================================
   // CÁLCULOS TÉRMICOS DE LA SIMULACIÓN LOCAL
@@ -258,15 +285,18 @@ export function useClimateControl() {
   // =========================================================================
   // CONTROLADORES DE ACCIONES DE USUARIO
   // En modo Simulación: modifican el estado local reactivo.
-  // En modo Conectado: transmiten el comando al ESP32 con confirmación explícita ACK.
+  // En modo Conectado (WiFi o BLE): transmiten el comando al ESP32 con confirmación explícita ACK.
   // =========================================================================
+  const isHardwareConnected = activeMode === CONNECTION_MODE.CONNECTED || activeMode === CONNECTION_MODE.BLUETOOTH;
+  const activeClient = protocol === 'bluetooth' ? esp32Ble : esp32;
+
   const increaseTemp = useCallback(() => {
     if (activeMode === CONNECTION_MODE.SIMULATION) {
       const nextTemp = Math.min(MAX_TEMP, Math.round((simState.target + TEMP_STEP) * 10) / 10);
       if (nextTemp !== simState.target) {
         setSimState(prev => ({ ...prev, target: nextTemp }));
       }
-    } else if (activeMode === CONNECTION_MODE.CONNECTED) {
+    } else if (isHardwareConnected) {
       const baseTarget = pendingTargetRef.current !== null ? pendingTargetRef.current : connectedState.target;
       const nextTemp = Math.min(MAX_TEMP, Math.round((baseTarget + TEMP_STEP) * 10) / 10);
       if (nextTemp === baseTarget) return;
@@ -274,14 +304,14 @@ export function useClimateControl() {
       pendingTargetRef.current = nextTemp;
       setPendingCommand(prev => ({ ...prev, target: nextTemp }));
 
-      esp32.sendTarget(nextTemp)
+      activeClient.sendTarget(nextTemp)
         .then(() => {
           if (pendingTargetRef.current === nextTemp) {
             pendingTargetRef.current = null;
           }
         })
         .catch(err => {
-          console.warn('[TERMA] Error o timeout en comando setTarget:', err.message);
+          console.warn(`[TERMA] Error o timeout en comando setTarget (${protocol}):`, err.message);
           if (pendingTargetRef.current === nextTemp) {
             pendingTargetRef.current = null;
           }
@@ -295,7 +325,7 @@ export function useClimateControl() {
           });
         });
     }
-  }, [activeMode, simState.target, connectedState.target]);
+  }, [activeMode, isHardwareConnected, activeClient, protocol, simState.target, connectedState.target]);
 
   const decreaseTemp = useCallback(() => {
     if (activeMode === CONNECTION_MODE.SIMULATION) {
@@ -303,7 +333,7 @@ export function useClimateControl() {
       if (nextTemp !== simState.target) {
         setSimState(prev => ({ ...prev, target: nextTemp }));
       }
-    } else if (activeMode === CONNECTION_MODE.CONNECTED) {
+    } else if (isHardwareConnected) {
       const baseTarget = pendingTargetRef.current !== null ? pendingTargetRef.current : connectedState.target;
       const nextTemp = Math.max(MIN_TEMP, Math.round((baseTarget - TEMP_STEP) * 10) / 10);
       if (nextTemp === baseTarget) return;
@@ -311,14 +341,14 @@ export function useClimateControl() {
       pendingTargetRef.current = nextTemp;
       setPendingCommand(prev => ({ ...prev, target: nextTemp }));
 
-      esp32.sendTarget(nextTemp)
+      activeClient.sendTarget(nextTemp)
         .then(() => {
           if (pendingTargetRef.current === nextTemp) {
             pendingTargetRef.current = null;
           }
         })
         .catch(err => {
-          console.warn('[TERMA] Error o timeout en comando setTarget:', err.message);
+          console.warn(`[TERMA] Error o timeout en comando setTarget (${protocol}):`, err.message);
           if (pendingTargetRef.current === nextTemp) {
             pendingTargetRef.current = null;
           }
@@ -332,7 +362,7 @@ export function useClimateControl() {
           });
         });
     }
-  }, [activeMode, simState.target, connectedState.target]);
+  }, [activeMode, isHardwareConnected, activeClient, protocol, simState.target, connectedState.target]);
 
   const togglePower = useCallback(() => {
     if (activeMode === CONNECTION_MODE.SIMULATION) {
@@ -340,7 +370,7 @@ export function useClimateControl() {
       return;
     }
 
-    if (activeMode === CONNECTION_MODE.CONNECTED) {
+    if (isHardwareConnected) {
       // Protección: Si ya existe una orden de POWER en vuelo, bloquear una segunda orden contradictoria
       if (powerPendingRef.current) return;
 
@@ -348,12 +378,12 @@ export function useClimateControl() {
       powerPendingRef.current = true;
       setPendingCommand(prev => ({ ...prev, power: true }));
 
-      esp32.sendPower(nextPower)
+      activeClient.sendPower(nextPower)
         .then(() => {
           // Confirmación positiva recibida del ESP32
         })
         .catch(err => {
-          console.warn('[TERMA] Error o timeout en comando setPower:', err.message);
+          console.warn(`[TERMA] Error o timeout en comando setPower (${protocol}):`, err.message);
           // Ante fallo o timeout, el estado se mantiene en el último confirmado por el hardware
         })
         .finally(() => {
@@ -366,7 +396,7 @@ export function useClimateControl() {
           });
         });
     }
-  }, [activeMode, connectedState.power]);
+  }, [activeMode, isHardwareConnected, activeClient, protocol, connectedState.power]);
 
   const toggleLight = useCallback(() => {
     if (activeMode === CONNECTION_MODE.SIMULATION) {
@@ -374,7 +404,7 @@ export function useClimateControl() {
       return;
     }
 
-    if (activeMode === CONNECTION_MODE.CONNECTED) {
+    if (isHardwareConnected) {
       // Protección: Si ya existe una orden de LUZ en vuelo, bloquear una segunda orden contradictoria
       if (lightPendingRef.current) return;
 
@@ -382,12 +412,12 @@ export function useClimateControl() {
       lightPendingRef.current = true;
       setPendingCommand(prev => ({ ...prev, light: true }));
 
-      esp32.sendLight(nextLight)
+      activeClient.sendLight(nextLight)
         .then(() => {
           // Confirmación positiva recibida del ESP32
         })
         .catch(err => {
-          console.warn('[TERMA] Error o timeout en comando setLight:', err.message);
+          console.warn(`[TERMA] Error o timeout en comando setLight (${protocol}):`, err.message);
           // Ante fallo o timeout, el estado se mantiene en el último confirmado por el hardware
         })
         .finally(() => {
@@ -400,7 +430,7 @@ export function useClimateControl() {
           });
         });
     }
-  }, [activeMode, connectedState.light]);
+  }, [activeMode, isHardwareConnected, activeClient, protocol, connectedState.light]);
 
   // Control explícito de modo (Simulación vs Hardware)
   const setMode = useCallback((mode) => {
@@ -412,13 +442,27 @@ export function useClimateControl() {
     }
     if (mode === 'simulation') {
       esp32.disconnect();
+      esp32Ble.disconnect();
     } else {
-      esp32.reconnect();
+      if (protocol === 'bluetooth') {
+        esp32Ble.connect();
+      } else {
+        esp32.reconnect();
+      }
     }
-  }, []);
+  }, [protocol]);
 
   const setEspIp = useCallback((ip) => {
     esp32.setTargetIp(ip);
+  }, []);
+
+  const setProtocol = useCallback((newProto) => {
+    setProtocolState(newProto);
+    try {
+      localStorage.setItem('TERMA_protocol', newProto);
+    } catch {
+      // Ignorar errores
+    }
   }, []);
 
   const reconnect = useCallback(() => {
@@ -428,8 +472,12 @@ export function useClimateControl() {
     } catch {
       // Ignorar errores
     }
-    esp32.reconnect();
-  }, []);
+    if (protocol === 'bluetooth') {
+      esp32Ble.connect();
+    } else {
+      esp32.reconnect();
+    }
+  }, [protocol]);
 
   return {
     // Lecturas y estado consolidados
@@ -445,6 +493,7 @@ export function useClimateControl() {
 
     // Conexión y arquitectura
     activeMode,
+    protocol,
     isPending: Boolean(pendingCommand),
     isStale: activeMode === CONNECTION_MODE.DISCONNECTED && connectedState.lastUpdate !== null,
     espState,
@@ -455,6 +504,7 @@ export function useClimateControl() {
     togglePower,
     toggleLight,
     setMode,
+    setProtocol,
     reconnect,
     setEspIp,
   };

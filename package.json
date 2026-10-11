@@ -12,6 +12,7 @@
         "build:apk": "vite build && npx cap sync && powershell -ExecutionPolicy Bypass -File .\\build-apk.ps1"
     },
     "dependencies": {
+        "@capacitor-community/bluetooth-le": "^8.3.0",
         "@capacitor/android": "^8.5.3",
         "@capacitor/core": "^8.5.3",
         "lucide-react": "^0.468.0",

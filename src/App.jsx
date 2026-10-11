@@ -1,6 +1,5 @@
 import React from 'react';
 import { useClimateControl } from './hooks/useClimateControl';
-import { Header } from './components/Header';
 import { Screen } from './components/Screen';
 import { Controls } from './components/Controls';
 import { InfoBar } from './components/InfoBar';
@@ -20,6 +19,8 @@ export function App() {
     activeMode,
     isStale,
     espState,
+    protocol,
+    setProtocol,
     increaseTemp,
     decreaseTemp,
     togglePower,
@@ -31,8 +32,6 @@ export function App() {
 
   return (
     <main className="page">
-      <Header />
-
       <section className="housing">
         <Screen
           target={target}
@@ -65,6 +64,8 @@ export function App() {
         activeMode={activeMode}
         isStale={isStale}
         espState={espState}
+        protocol={protocol}
+        onSetProtocol={setProtocol}
         onSetMode={setMode}
         onReconnect={reconnect}
         onSetEspIp={setEspIp}

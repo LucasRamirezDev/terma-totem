@@ -23,6 +23,23 @@ export const CONNECTION_MODE = {
   CONNECTING: 'connecting',     // Estableciendo enlace WebSocket
   CONNECTED: 'connected',       // ESP32 conectado (fuente de verdad única)
   DISCONNECTED: 'disconnected', // Enlace perdido (mantiene último estado conocido)
+  BLUETOOTH: 'bluetooth',       // Modo Bluetooth Low Energy (BLE)
+};
+
+// Protocolos de comunicación soportados
+export const PROTOCOLS = {
+  WIFI: 'wifi',
+  BLUETOOTH: 'bluetooth',
+};
+
+// Protocolo Bluetooth Low Energy (TERMA BLE Protocol ESP32-S3 NimBLE 2.x)
+export const BLE_CONFIG = {
+  DEVICE_NAME: 'TERMA-CONTROL',
+  SERVICE_UUID: '8d7a0001-31d5-4db4-a9d7-0e3c4b1a7001',
+  RX_CHAR_UUID: '8d7a0002-31d5-4db4-a9d7-0e3c4b1a7001', // Write with response (Android -> ESP32)
+  TX_CHAR_UUID: '8d7a0003-31d5-4db4-a9d7-0e3c4b1a7001', // Notify & Read (ESP32 -> Android)
+  MAX_CHUNK_SIZE: 20,
+  MAX_PAYLOAD_SIZE: 511,
 };
 
 // Estados térmicos del sistema
