@@ -13,31 +13,16 @@ import {
   getLedPresentation,
 } from '../src/constants/climate.js';
 
-test('calculateFanPwm - Límites y fórmula unificada', () => {
+test('calculateFanPwm - Desacoplado de la temperatura (100% constante en encendido)', () => {
   // 1. Apagado -> 0%
+  assert.equal(calculateFanPwm(false), 0);
   assert.equal(calculateFanPwm(false, 25, 20), 0);
-  assert.equal(calculateFanPwm(false, true, false, 25, 20), 0);
 
-  // 2. Estable (dentro de histéresis ±0.3°C) -> 30% de recirculación base
-  assert.equal(calculateFanPwm(true, 20.0, 20.0), 30);
-  assert.equal(calculateFanPwm(true, 20.2, 20.0), 30);
-  assert.equal(calculateFanPwm(true, 19.8, 20.0), 30);
-
-  // 3. Calentando (target = 22, actual = 20 -> diff = 2.0°C)
-  // Fórmula: 40 + 2.0 * 12 = 64%
-  assert.equal(calculateFanPwm(true, 22.0, 20.0), 64);
-  assert.equal(calculateFanPwm(true, true, false, 22.0, 20.0), 64);
-
-  // 4. Enfriando (target = 18, actual = 21 -> diff = 3.0°C)
-  // Fórmula: 40 + 3.0 * 12 = 76%
-  assert.equal(calculateFanPwm(true, 18.0, 21.0), 76);
-  assert.equal(calculateFanPwm(true, false, true, 18.0, 21.0), 76);
-
-  // 5. Demanda mínima justo fuera de tolerancia (diff = 0.4°C)
-  // 40 + 0.4 * 12 = 44.8 -> 45% (acotado min 35%)
-  assert.equal(calculateFanPwm(true, 20.4, 20.0), 45);
-
-  // 6. Demanda máxima saturada (diff = 6.0°C -> 40 + 72 = 112 -> clamp 100%)
+  // 2. Encendido -> 100% constante (sin variar por la temperatura)
+  assert.equal(calculateFanPwm(true), 100);
+  assert.equal(calculateFanPwm(true, 20.0, 20.0), 100);
+  assert.equal(calculateFanPwm(true, 22.0, 20.0), 100);
+  assert.equal(calculateFanPwm(true, 18.0, 21.0), 100);
   assert.equal(calculateFanPwm(true, 26.0, 20.0), 100);
 });
 

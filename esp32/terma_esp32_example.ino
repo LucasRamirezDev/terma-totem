@@ -107,23 +107,20 @@ bool ledBlinkState = false;
 // ==============================================================
 // CONFIGURACIÓN DE VENTILADORES FÍSICOS
 // ==============================================================
-// Los ventiladores físicos operan al 100% fijo (duty 255 a 25 kHz) para no verse
-// afectados por las fluctuaciones de la simulación de temperatura.
-// - Si FANS_ALWAYS_100_PERCENT es true: los 3 ventiladores funcionan siempre al 100% continuo.
-// - Si es false: funcionan al 100% cuando el sistema está encendido (powerEnabled == true)
-//   y se detienen (0%) cuando el sistema se apaga.
-// En ambos casos, el parámetro fanSpeed enviado en la telemetría a la interfaz React
-// sigue variando según la demanda térmica simulada y la tira WS2812B responde a los estados.
+// Los ventiladores operan al 100% fijo (duty 255 a 25 kHz) cuando el sistema está encendido,
+// completamente desacoplados de las fluctuaciones de la simulación de temperatura.
+// Cuando el sistema está apagado, los ventiladores se detienen (0%).
+// Tanto el actuador PWM como la telemetría (fanSpeed) se mantienen al 100% constante en encendido.
 const bool FANS_ALWAYS_100_PERCENT = true;
 
 // ==============================================================
 // ACTUALIZACIÓN DE ACTUADORES FÍSICOS
 // ==============================================================
 void applyFanPwm() {
-  if (FANS_ALWAYS_100_PERCENT) {
-    writeFanPwm(255); // Siempre al 100% (duty cycle máximo, sin variar por temperatura)
+  if (!powerEnabled) {
+    writeFanPwm(0);
   } else {
-    writeFanPwm(powerEnabled ? 255 : 0); // 100% al encender, 0% al apagar
+    writeFanPwm(255); // Siempre al 100% continuo (desacoplado de la temperatura)
   }
 }
 
@@ -353,20 +350,18 @@ void loop() {
       actualTemperature = aim;
     }
 
-    // 2. Cálculo unificado de estados y velocidad común de ventiladores (PWM):
-    // Fórmula idéntica a React:
-    // - Apagado: 0%
-    // - Estable (|diff| <= 0.3): 30% (recirculación base)
-    // - Demanda (|diff| > 0.3): clamp(round(40 + |diff| * 12), 35, 100)
+    // 2. Cálculo unificado de estados y velocidad de ventiladores (PWM):
+    // Los ventiladores se mantienen siempre al 100% PWM cuando el sistema está activo,
+    // desacoplados de la simulación de temperatura.
     if (!powerEnabled) {
       systemStatus = "apagado";
       ledMode = "red";
       fanSpeed = 0;
     } else {
+      fanSpeed = 100; // Siempre al 100% constante
       float tempDiff = abs(targetTemperature - actualTemperature);
 
       if (tempDiff > 0.3) {
-        fanSpeed = constrain(round(40.0 + tempDiff * 12.0), 35, 100);
         if (actualTemperature < targetTemperature - 0.3) {
           systemStatus = "calentando";
           ledMode = "blink-green";
@@ -377,7 +372,6 @@ void loop() {
       } else {
         systemStatus = "estable";
         ledMode = "green";
-        fanSpeed = 30; // Velocidad base de recirculación
       }
     }
 

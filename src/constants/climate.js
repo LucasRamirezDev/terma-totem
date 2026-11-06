@@ -83,44 +83,18 @@ export function getLedPresentation(ledMode) {
 
 /**
  * Calcula el ciclo de trabajo PWM (0 a 100%) para el control común
- * de los 3 ventiladores de 12V según demanda térmica:
+ * de los 3 ventiladores de 12V:
  * 
- * Fórmula:
- * - Apagado: 0%
- * - En demanda (|consigna - actual| > 0.3°C):
- *     clamp(round(40 + |consigna - actual| * 12), 35, 100)
- * - En reposo / estable (|consigna - actual| <= 0.3°C):
- *     30% (recirculación de aire base)
- * 
- * Soporta ambas firmas:
- * - calculateFanPwm(power, target, actual)
- * - calculateFanPwm(power, heating, cooling, target, actual) [retrocompatible]
+ * Comportamiento:
+ * - Los ventiladores operan siempre al 100% de potencia fija cuando el sistema
+ *   está encendido (power == true), desacoplados de la simulación de temperatura.
+ * - Si el sistema está apagado (power == false), retorna 0%.
  * 
  * NOTA: Representa porcentaje de comando PWM, no RPM medidas físicamente.
  */
-export function calculateFanPwm(power, arg1, arg2, arg3, arg4) {
+export function calculateFanPwm(power) {
   if (!power) return 0;
-
-  let target;
-  let actual;
-
-  if (typeof arg3 === 'number' && typeof arg4 === 'number') {
-    // Firma extendida: (power, heating, cooling, target, actual)
-    target = arg3;
-    actual = arg4;
-  } else if (typeof arg1 === 'number' && typeof arg2 === 'number') {
-    // Firma directa: (power, target, actual)
-    target = arg1;
-    actual = arg2;
-  } else {
-    return 30;
-  }
-
-  const diff = Math.abs(target - actual);
-  if (diff > TEMP_TOLERANCE) {
-    return Math.min(100, Math.max(35, Math.round(40 + diff * 12)));
-  }
-  return 30; // Velocidad de recirculación base en reposo
+  return 100;
 }
 
 /**
