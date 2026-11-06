@@ -92,7 +92,7 @@ export function Screen({ target, actual, status, led, isStale, activeMode }) {
               aria-label="Mostrar código QR de la aplicación"
             >
               <img src="/icono-qr.png" alt="Abrir QR" className="qr-trigger-icon" />
-              <span>TERMA</span>
+              <span>TERMA v1.1</span>
             </button>
           </div>
 

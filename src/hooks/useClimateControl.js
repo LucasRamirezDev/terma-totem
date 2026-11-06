@@ -232,7 +232,9 @@ export function useClimateControl() {
   const currentActual = activeMode === CONNECTION_MODE.SIMULATION ? simState.actual : connectedState.actual;
   const currentPower = activeMode === CONNECTION_MODE.SIMULATION ? simState.power : connectedState.power;
   const currentLight = activeMode === CONNECTION_MODE.SIMULATION ? simState.light : connectedState.light;
-  const currentFanPwm = activeMode === CONNECTION_MODE.SIMULATION ? simFanPwm : connectedState.fanSpeed;
+  // Los ventiladores se mantienen siempre al 100% continuo cuando el sistema está encendido,
+  // desacoplados de la simulación de temperatura tanto en modo simulación como en conectado.
+  const currentFanPwm = calculateFanPwm(currentPower);
   const rawStatus = activeMode === CONNECTION_MODE.SIMULATION ? simStatus : connectedState.systemStatus;
   const rawLedMode = activeMode === CONNECTION_MODE.SIMULATION ? simLedMode : connectedState.ledMode;
 
