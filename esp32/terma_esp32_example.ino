@@ -5,7 +5,7 @@
   Controlador principal del sistema físico de climatización:
   - Servidor WebSocket asíncrono en "/ws" (Puerto 80)
   - Punto de acceso WiFi propio "TERMA-TOTEM" (IP 192.168.4.1) o cliente de red local
-  - Control PWM unificado a 25 kHz para 3 ventiladores de 12V (4 pines PWM)
+  - Control PWM unificado a 25 kHz para 3 ventiladores de 12V (4 pines PWM) al 100% fijo (desacoplado de la simulación de temperatura)
   - Control de tira de 9 LED RGB WS2812B con animaciones no bloqueantes (millis)
   - Los 4 estados visuales: red (apagado), blink-green (calentando), blink-cyan (enfriando), green (estable)
   - El botón LUZ habilita/deshabilita la tira; cuando está apagada, los 9 LED permanecen en negro sin detener ventiladores ni simulación
@@ -105,11 +105,26 @@ unsigned long lastLedBlinkTick = 0;
 bool ledBlinkState = false;
 
 // ==============================================================
+// CONFIGURACIÓN DE VENTILADORES FÍSICOS
+// ==============================================================
+// Los ventiladores físicos operan al 100% fijo (duty 255 a 25 kHz) para no verse
+// afectados por las fluctuaciones de la simulación de temperatura.
+// - Si FANS_ALWAYS_100_PERCENT es true: los 3 ventiladores funcionan siempre al 100% continuo.
+// - Si es false: funcionan al 100% cuando el sistema está encendido (powerEnabled == true)
+//   y se detienen (0%) cuando el sistema se apaga.
+// En ambos casos, el parámetro fanSpeed enviado en la telemetría a la interfaz React
+// sigue variando según la demanda térmica simulada y la tira WS2812B responde a los estados.
+const bool FANS_ALWAYS_100_PERCENT = true;
+
+// ==============================================================
 // ACTUALIZACIÓN DE ACTUADORES FÍSICOS
 // ==============================================================
 void applyFanPwm() {
-  int dutyCycle = map(fanSpeed, 0, 100, 0, 255);
-  writeFanPwm(dutyCycle);
+  if (FANS_ALWAYS_100_PERCENT) {
+    writeFanPwm(255); // Siempre al 100% (duty cycle máximo, sin variar por temperatura)
+  } else {
+    writeFanPwm(powerEnabled ? 255 : 0); // 100% al encender, 0% al apagar
+  }
 }
 
 void updateLeds() {
