@@ -14,4 +14,9 @@ Set-Content -Path "D:\ARCHIVOS 2026\envero-totem-react\envero-totem\android\loca
 
 Write-Host "Compiling Android project with Gradle wrapper using JDK 21..."
 Set-Location "D:\ARCHIVOS 2026\envero-totem-react\envero-totem\android"
-& ".\gradlew.bat" assembleDebug
+& ".\gradlew.bat" assembleDebug --no-daemon
+
+if (Test-Path "app\build\outputs\apk\debug\app-debug.apk") {
+    Copy-Item -Path "app\build\outputs\apk\debug\app-debug.apk" -Destination "D:\ARCHIVOS 2026\envero-totem-react\envero-totem\TERMA-debug.apk" -Force
+    Write-Host "TERMA-debug.apk updated successfully in root directory."
+}
